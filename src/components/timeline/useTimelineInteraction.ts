@@ -224,6 +224,8 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
   const anchor = useRef<ClipId | null>(null);
   /** Alt suppresses snapping for as long as it is held, without changing the preference. */
   const altHeld = useRef(false);
+  /** True only across a `focusClip` call, so `onLaneFocus` can tell a Tab from us. */
+  const selfFocus = useRef(false);
   const reduced = useReducedMotion();
   const reducedRef = useRef(reduced);
   reducedRef.current = reduced;
@@ -839,7 +841,13 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
     (id: ClipId): void => {
       setFocusedClipId(id);
       const el = refs.laneContent.current?.querySelector<HTMLElement>(`[data-clip-id="${id}"]`);
+      // Marks the focus that follows as ours, so `onLaneFocus` does not also
+      // reveal it: the keyboard callers scroll deliberately afterwards and the
+      // pointer callers must not scroll at all (a press on a clip whose far edge
+      // is off screen would jump the lanes out from under the gesture).
+      selfFocus.current = true;
       el?.focus({ preventScroll: true });
+      selfFocus.current = false;
     },
     [refs.laneContent],
   );
@@ -1133,12 +1141,24 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
     [focusClip, focusedClipId, refs.laneViewport],
   );
 
-  /** Keeps the roving tab stop honest when focus lands on a clip by Tab. */
-  const onLaneFocus = useCallback((event: ReactFocusEvent<HTMLDivElement>): void => {
-    const el = (event.target as HTMLElement).closest<HTMLElement>('[data-clip-id]');
-    const id = el?.dataset.clipId as ClipId | undefined;
-    if (id) setFocusedClipId(id);
-  }, []);
+  /**
+   * Keeps the roving tab stop honest when focus lands on a clip by Tab — and
+   * reveals it. `focusClip` uses `preventScroll` because the lane scroll is
+   * store-owned, so a Tab arriving from outside would otherwise leave the roving
+   * clip focused somewhere off screen with no focus ring anywhere on screen.
+   * Only a focus this hook did not itself cause needs the reveal.
+   */
+  const onLaneFocus = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>): void => {
+      const el = (event.target as HTMLElement).closest<HTMLElement>('[data-clip-id]');
+      const id = el?.dataset.clipId as ClipId | undefined;
+      if (!id) return;
+      setFocusedClipId(id);
+      if (selfFocus.current) return;
+      scrollClipIntoView(readStore(), id, refs.laneViewport.current);
+    },
+    [refs.laneViewport],
+  );
 
   /* ------------------------------------------------------------- HTML5 DnD */
 

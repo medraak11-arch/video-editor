@@ -20,7 +20,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { ReactElement, ReactNode } from 'react';
+import type { ReactElement, ReactNode, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronRight } from 'lucide-react';
 
@@ -50,15 +50,22 @@ const GAP = 4;
 
 const isFocusable = (item: MenuItem): boolean => item.kind === 'item' || item.kind === 'submenu';
 
+/** `restoreFocus: false` for a dismissal that is itself a focus move. */
+export interface MenuCloseOptions {
+  restoreFocus?: boolean;
+}
+
 interface ListProps {
   items: MenuItem[];
   top: number;
   left: number;
-  onClose(): void;
+  onClose(options?: MenuCloseOptions): void;
   align: 'start' | 'end';
+  /** The trigger. Focus landing back on it is a click that will toggle us shut. */
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
-function MenuList({ items, top, left, onClose, align }: ListProps): ReactElement {
+function MenuList({ items, top, left, onClose, align, anchorRef }: ListProps): ReactElement {
   const listRef = useRef<HTMLDivElement | null>(null);
   const [focusIndex, setFocusIndex] = useState(() => items.findIndex(isFocusable));
   const [openSub, setOpenSub] = useState<{ id: string; top: number; left: number } | null>(null);
@@ -104,7 +111,27 @@ function MenuList({ items, top, left, onClose, align }: ListProps): ReactElement
       role="menu"
       className="ve-menu"
       style={{ top: point.top, left: point.left }}
+      /* Escape is the primary dismissal, but it is a keydown on this container
+         and so only reaches us while focus is inside. Tab moves focus out of a
+         portaled menu without the browser telling anyone, which used to leave
+         the popover on screen and unclosable. Focus leaving the subtree is a
+         dismissal too — without restoring focus, because the whole point is
+         that focus has already gone somewhere the user chose. */
+      onBlur={(event) => {
+        const next = event.relatedTarget as Element | null;
+        if (next) {
+          if (next.closest('.ve-menu')) return;
+          // Landing on the trigger means a click that is about to toggle us
+          // shut; closing here would let that toggle re-open the menu.
+          if (anchorRef?.current?.contains(next)) return;
+        }
+        onClose({ restoreFocus: false });
+      }}
       onKeyDown={(event) => {
+        // A submenu is portaled to <body> but is still this list's React child,
+        // so its key events bubble here. Without this the roving index of BOTH
+        // lists moves on one ArrowDown and focus lands back in the parent.
+        if ((event.target as Element).closest('.ve-menu') !== listRef.current) return;
         if (event.key === 'Escape') {
           event.preventDefault();
           event.stopPropagation();
@@ -152,6 +179,10 @@ function MenuList({ items, top, left, onClose, align }: ListProps): ReactElement
                 setOpenSub({ id: item.id, top: rect.top, left: rect.right + GAP });
               }}
               onKeyDown={(event) => {
+                // Same portal boundary: an Enter on an item INSIDE the submenu
+                // bubbles to this button, and preventDefault here would swallow
+                // the activation of the item the user actually chose.
+                if (event.target !== event.currentTarget) return;
                 if (event.key === 'ArrowRight' || event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault();
                   const rect = event.currentTarget.getBoundingClientRect();
@@ -224,8 +255,9 @@ export function Menu({ trigger, items, align = 'start' }: MenuProps): ReactEleme
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState({ top: 0, left: 0 });
 
-  const close = useCallback(() => {
+  const close = useCallback((options?: MenuCloseOptions) => {
     setOpen(false);
+    if (options?.restoreFocus === false) return;
     anchorRef.current?.focus();
   }, []);
 
@@ -273,6 +305,7 @@ export function Menu({ trigger, items, align = 'start' }: MenuProps): ReactEleme
               top={anchor.top}
               left={anchor.left}
               align={align}
+              anchorRef={anchorRef}
               onClose={close}
             />,
             document.body,

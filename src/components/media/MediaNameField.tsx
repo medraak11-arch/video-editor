@@ -29,7 +29,7 @@
 --------------------------------------------------------------------------- */
 
 import './media.css';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FocusEvent, KeyboardEvent, ReactElement } from 'react';
 import type { MediaId } from '../../types/model';
 import { readStore, useEditorStore } from '../../state/store';
@@ -111,6 +111,19 @@ export function MediaNameField({
     input.focus();
     input.select();
   }, [autoFocus]);
+
+  // A revert remounts the input through `key`, which destroys the element that
+  // had focus — leaving it on <body>, where no `data-shortcut-scope` applies and
+  // the next Escape has nothing to act on. Put it back on the field it reverted,
+  // which is where the user still is. Layout effect: before the browser paints,
+  // so the caret never visibly leaves.
+  useLayoutEffect(() => {
+    if (seed === 0) return;
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [seed]);
 
   if (!item) return null;
 
