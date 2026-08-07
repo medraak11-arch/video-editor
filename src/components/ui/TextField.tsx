@@ -95,8 +95,14 @@ export function TextField({
       return;
     }
     if (event.key === 'Escape') {
-      // Rung (b) of the Escape ladder (PLAN §8.10): the field reverts here and the
-      // key never reaches the dialog or the timeline underneath it.
+      // Rung (b) of the Escape ladder (PLAN §8.10): a DIRTY field reverts here and
+      // swallows the key, so the dialog underneath does not also close.
+      //
+      // A CLEAN field must let it through. Swallowing unconditionally means a
+      // dialog containing a text field can never be dismissed from the keyboard —
+      // focus stays in the field, every Escape is consumed, and the only way out
+      // is the mouse. That is a keyboard trap (WCAG 2.1.2).
+      if (text === value) return;
       event.preventDefault();
       event.stopPropagation();
       setEditing(false);

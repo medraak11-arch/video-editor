@@ -174,12 +174,17 @@ export function NumericField({
       return;
     }
     if (event.key === 'Escape') {
+      // Same ladder rung as TextField: dirty reverts and swallows, clean falls
+      // through to the dialog. Previously this always swallowed and then blurred
+      // to compensate, which escaped the trap but threw the caret away — Escape
+      // on an untouched field cost you your place in the form for nothing.
+      const formatted = isMixed ? 'Mixed' : format(value as number);
+      if (text === formatted) return;
       event.preventDefault();
       event.stopPropagation();
       setEditing(false);
-      setText(isMixed ? 'Mixed' : format(value as number));
+      setText(formatted);
       onCancel?.();
-      inputRef.current?.blur();
       return;
     }
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {

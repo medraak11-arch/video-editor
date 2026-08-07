@@ -80,13 +80,17 @@ export function TimecodeField({
       return;
     }
     if (event.key === 'Escape') {
+      // Same ladder rung as TextField and NumericField: dirty reverts and
+      // swallows, clean falls through. A showing error counts as dirty — Escape
+      // should clear the error before it closes anything.
+      const formatted = framesToTimecode(value, fps);
+      if (text === formatted && !error) return;
       event.preventDefault();
       event.stopPropagation();
       setEditing(false);
       setError(null);
-      setText(framesToTimecode(value, fps));
+      setText(formatted);
       onCancel?.();
-      inputRef.current?.blur();
     }
   };
 
