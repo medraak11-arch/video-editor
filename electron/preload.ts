@@ -1,0 +1,69 @@
+/* ---------------------------------------------------------------------------
+   electron/preload.ts — the contextBridge. PLAN §4.2.
+
+   The ONLY module permitted to call webUtils. No logic, no fs, no
+   child_process: every member is a one-line ipcRenderer.invoke / .send, or an
+   .on wrapper that returns its own unsubscribe.
+
+   Emits as CommonJS. With contextIsolation:true and sandbox:false, Electron
+   loads the preload as CJS; an ESM preload fails silently, leaving
+   window.editorAPI undefined and the app running in fixture mode INSIDE
+   Electron — a failure that looks like a data bug.
+--------------------------------------------------------------------------- */
+
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import type { IpcRendererEvent } from 'electron';
+import { CH } from '../src/types/api';
+import type { EditorAPI, OpenResult, ProbeResult, SaveResult } from '../src/types/api';
+import type { ProjectFile } from '../src/types/model';
+
+/** Subscribes and hands back its own unsubscribe. */
+function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
+  const listener = (_event: IpcRendererEvent, payload: T) => cb(payload);
+  ipcRenderer.on(channel, listener);
+  return () => {
+    ipcRenderer.removeListener(channel, listener);
+  };
+}
+
+const platform = process.platform as EditorAPI['platform'];
+
+const api: EditorAPI = {
+  platform,
+
+  window: {
+    minimize: () => ipcRenderer.send(CH.windowMinimize),
+    maximizeToggle: () => ipcRenderer.send(CH.windowMaximize),
+    close: () => ipcRenderer.send(CH.windowClose),
+    isMaximized: () => ipcRenderer.invoke(CH.windowIsMaximized) as Promise<boolean>,
+    onMaximizeChange: (cb) => subscribe<boolean>(CH.windowMaxChanged, cb),
+  },
+
+  media: {
+    pickFiles: () => ipcRenderer.invoke(CH.mediaPick) as Promise<string[]>,
+    probe: (path: string) => ipcRenderer.invoke(CH.mediaProbe, path) as Promise<ProbeResult>,
+    onProbeProgress: (cb) =>
+      subscribe<{ path: string; progress: number }>(CH.mediaProbeProgress, cb),
+    /** Preload-only capability. There is no `(file as any).path` anywhere in this codebase. */
+    pathForFile: (file: File) => {
+      try {
+        return webUtils.getPathForFile(file) || null;
+      } catch {
+        return null;
+      }
+    },
+  },
+
+  project: {
+    save: (project: ProjectFile, opts) =>
+      ipcRenderer.invoke(CH.projectSave, project, opts ?? {}) as Promise<SaveResult>,
+    open: () => ipcRenderer.invoke(CH.projectOpen) as Promise<OpenResult>,
+    pickDirectory: () => ipcRenderer.invoke(CH.projectPickDir) as Promise<string | null>,
+  },
+
+  // `export` is deliberately absent in this build: ExportDialog falls back to its local
+  // stub (PLAN §8.9). Declaring it as undefined here would still satisfy the optional
+  // property, but leaving it out keeps `getEditorAPI().export ?? exportStub` honest.
+};
+
+contextBridge.exposeInMainWorld('editorAPI', api);

@@ -1,0 +1,366 @@
+/* ---------------------------------------------------------------------------
+   media.css — the media rail, its rows, the empty state and the file-drop
+   affordance. OWNER: media.
+
+   No colour literal, no z-index literal, no literal duration, and no --accent:
+   the rail's row highlight is NOT selection (PLAN §7.0) and the file-drop
+   affordance spends no accent either (PLAN §7.4, withdrawn use 7). The only
+   accent in this region is the focus ring, which base.css owns.
+
+   The four local custom properties below are layout maths on this slice's own
+   root elements (permitted by PLAN §8.2). Their authoritative values come from
+   MEDIA_ROW_HEIGHT / MEDIA_THUMB in src/lib/constants.ts, set inline by
+   MediaRail; the declarations here are the fallback so the sheet stands alone.
+--------------------------------------------------------------------------- */
+
+.media-rail {
+  width: 100%;
+  height: 100%;
+}
+
+/* ================================================================ the list */
+
+.media-list {
+  --media-row-h: 44px;
+  --media-thumb-w: 32px;
+  --media-thumb-h: 18px;
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-hair);
+  /* Room for the +2px focus ring, which would otherwise be clipped by the
+     scroll container (PLAN §5 allows no inset exception outside the timeline). */
+  padding: var(--space-sm);
+}
+
+/* ================================================================= a row */
+
+.media-row {
+  display: grid;
+  grid-template-columns: var(--media-thumb-w) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-md);
+  height: var(--media-row-h);
+  padding: 0 var(--space-md);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-ink);
+  cursor: default;
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    border-color var(--dur-feedback) var(--ease-out),
+    color var(--dur-feedback) var(--ease-out);
+}
+
+.media-row[draggable='true'] {
+  cursor: grab;
+}
+
+.media-row[draggable='true']:active {
+  cursor: grabbing;
+}
+
+/* hover — --surface-panel-hover sits 0.03 clear of --surface-raised, so a
+   hovered row can never be mistaken for a raised control (PLAN §7.1). */
+.media-row:hover {
+  background: var(--surface-panel-hover);
+}
+
+/* The row the user chose. This is a row highlight, NOT the timeline selection:
+   --surface-raised, no accent. It is keyed off data-active rather than the
+   roving tabindex, so a freshly populated rail highlights nothing. */
+.media-row[data-active='true'] {
+  background: var(--surface-raised);
+}
+
+.media-row[data-active='true']:hover,
+.media-row:active {
+  background: var(--surface-raised-hover);
+}
+
+/* --text-muted is forbidden on any -hover surface (PLAN §7.1), so the two
+   states that land on --surface-raised-hover lift their muted text to ink. */
+.media-row[data-active='true']:hover .media-row-muted,
+.media-row:active .media-row-muted {
+  color: var(--text-ink);
+}
+
+/* error / warning — icon + word + colour, in that order. The hairline is the
+   third signal, never the first (PLAN §7.6). */
+.media-row[data-tone='danger'] {
+  border-color: var(--status-danger);
+}
+
+.media-row[data-tone='warning'] {
+  border-color: var(--status-warning);
+}
+
+.media-row-muted {
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- thumbnail */
+
+.media-row-thumb {
+  display: grid;
+  place-items: center;
+  width: var(--media-thumb-w);
+  height: var(--media-thumb-h);
+  overflow: hidden;
+  border: 1px solid var(--border-structural);
+  border-radius: var(--radius-clip);
+  color: var(--text-muted);
+}
+
+.media-row-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Offline media keeps its texture even when a stale thumbnail is still around,
+   so the state survives at any size and under any colour-vision deficiency. */
+.media-row[data-tone='danger'] .media-row-thumb {
+  border-color: var(--status-danger);
+  background-image: var(--texture-offline);
+}
+
+/* -------------------------------------------------------------------- text */
+
+.media-row-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-hair);
+  min-width: 0;
+}
+
+/* Middle truncation: the head ellipses, the tail never does, so the extension
+   and the shot number both stay readable. The DOM text stays complete, which is
+   what the row's accessible name is built from. */
+.media-row-name {
+  display: flex;
+  min-width: 0;
+  color: var(--text-ink);
+}
+
+.media-row-name-head {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-row-name-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.media-row-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  /* Status colour is never a text colour (PLAN §7.6). */
+  color: var(--text-ink);
+}
+
+.media-row[data-tone='danger'] .media-row-status-icon {
+  color: var(--status-danger);
+}
+
+.media-row[data-tone='warning'] .media-row-status-icon {
+  color: var(--status-warning);
+}
+
+.media-row-status-word {
+  flex: 0 0 auto;
+}
+
+.media-row-status-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The row's Tooltip body: the whole filename, and — when the row carries one —
+   the whole status message, both of which the 44px row can only ellipse. The
+   status line stays --text-muted because the word and the icon in the row have
+   already carried the state; this is the reading, not the signal. */
+.media-row-tip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-hair);
+  max-width: 34ch;
+}
+
+.media-row-tip-status {
+  color: var(--text-muted);
+}
+
+/* --------------------------------------------------------------- trailing */
+
+.media-row-trailing {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-xs);
+}
+
+.media-row-duration {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The row actions stay in the DOM and in the tab order; they simply do not
+   compete for attention until the row is hovered, focused or current. */
+.media-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-hair);
+  opacity: 0;
+  transition: opacity var(--dur-feedback) var(--ease-out);
+}
+
+.media-row:hover .media-row-actions,
+.media-row:focus-within .media-row-actions,
+.media-row[data-active='true'] .media-row-actions,
+.media-row[data-tone='danger'] .media-row-actions {
+  opacity: 1;
+}
+
+/* ============================================================ progress bar
+   Trough --border-structural, fill --text-ink. Never --surface-well (PLAN
+   §7.0) and never --accent (PLAN §7.4). The percentage is stated beside it, so
+   the bar is never the only signal.                                          */
+
+.media-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.media-progress-track {
+  flex: 1 1 auto;
+  height: 2px;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  background: var(--border-structural);
+  overflow: hidden;
+}
+
+.media-progress-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: var(--text-ink);
+  transition: transform var(--dur-feedback) var(--ease-out);
+}
+
+.media-progress-value {
+  flex: 0 0 auto;
+}
+
+/* ============================================================= empty state
+   The first-run experience. It teaches, it does not sell: a drop target, the
+   keyboard route, and nothing else (PRODUCT.md principle 5, PLAN §8.14).      */
+
+.media-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: var(--space-lg);
+}
+
+.media-empty-target {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: var(--space-xxl) var(--space-lg);
+  border: 1px dashed var(--border-structural);
+  border-radius: var(--radius-md);
+  text-align: center;
+  transition: border-color var(--dur-feedback) var(--ease-out);
+}
+
+.media-empty[data-drop-active='true'] .media-empty-target {
+  border-style: solid;
+  border-color: var(--border-hairline-strong);
+}
+
+.media-empty-title {
+  color: var(--text-ink);
+}
+
+/* The hint carries a real <kbd> from the shortcut registry, so the line is laid
+   out as a row rather than as running text: the key cap sits on the same optical
+   centre as the words either side of it, at any type size. */
+.media-empty-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+}
+
+/* ======================================================== drop affordance
+   A 2px --border-hairline-strong inset border on a --surface-panel overlay,
+   with an icon and a word. It needs no hue (PLAN §7.7). pointer-events stay
+   off so the overlay is invisible to the drag it is describing.              */
+
+.media-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-drop-overlay);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.media-drop-overlay-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-panel);
+  opacity: 0.88;
+}
+
+.media-drop-overlay-frame {
+  position: absolute;
+  inset: var(--space-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  border: 2px solid var(--border-hairline-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text-ink);
+}
+
+/* ============================================================== drag image
+   Built in the dragstart handler, measured once, then removed. It is parked
+   off-screen because setDragImage requires the node to be in the document.   */
+
+.media-drag-chip {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  max-width: 240px;
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--border-structural);
+  border-radius: var(--radius-clip);
+  background: var(--surface-raised);
+  color: var(--text-ink);
+  white-space: nowrap;
+}
+
+.media-drag-chip-duration {
+  color: var(--text-muted);
+}

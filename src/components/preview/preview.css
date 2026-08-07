@@ -1,0 +1,159 @@
+/* ---------------------------------------------------------------------------
+   preview.css — the well, the frame, the transport.
+
+   No colour literal, no z-index literal, no literal duration, no custom property
+   that is not in PLAN §7. The only local variables here are geometry.
+
+   The well is the darkest plane in the app and the frame inside it is the
+   brightest thing on screen; everything in this file exists to protect that
+   relationship. Nothing on the well is tinted, and nothing here is accented —
+   the accent budget (PLAN §7.4) spends nothing in the preview except the focus
+   ring, which comes from the shared primitives.
+--------------------------------------------------------------------------- */
+
+.ve-preview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--surface-well);
+  color: var(--text-on-well);
+}
+
+/* ------------------------------------------------------------ video surface */
+
+/* Generous breathing room: the frame is centred with air on every side, and the
+   surround is the same plane as the well, so nothing frames the picture. */
+.ve-video-surface {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-xxl);
+}
+
+/* The letterbox box: exactly the project aspect, measured in JS so clip
+   position (project-resolution px) maps onto it correctly. */
+.ve-video-stage {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: var(--surface-well);
+}
+
+.ve-video-el,
+.ve-video-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: 50% 50%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* The idle element of the pool is decoding the next clip; it must not paint. */
+.ve-video-el {
+  visibility: hidden;
+  opacity: 0;
+}
+
+/* opacity is restored here, not left to the inline clip opacity: the inline value is a
+   modifier on a visible element, never the only thing making the frame appear. */
+.ve-video-el[data-active='true'] {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* Fixture / unplayable source: the clip's still, letterboxed the same way. */
+.ve-video-still {
+  visibility: visible;
+}
+
+/* A legibility scrim over unknown image pixels, not a plane: --surface-well is closed by
+   PLAN §7.0 to the well, the transport strip and the two field insets, and this is none of
+   those. --scrim is the existing token for "darken whatever is underneath". */
+.ve-video-still-timecode {
+  position: absolute;
+  right: var(--space-md);
+  bottom: var(--space-md);
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--scrim);
+  color: var(--text-on-well);
+}
+
+/* ---------------------------------------------------------------- transport */
+
+.ve-transport {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: var(--space-md) var(--space-xl) var(--space-lg);
+  color: var(--text-on-well);
+}
+
+.ve-transport-side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.ve-transport-side-end {
+  justify-content: flex-end;
+}
+
+/* Two rhythms, one row: the five playback controls sit tight against each other, and the
+   in / out markers stand off by one step so the range marks read as a separate job. */
+.ve-transport-controls {
+  display: flex;
+  align-items: center;
+  justify-self: center;
+  gap: var(--space-md);
+}
+
+.ve-transport-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+/* Wide enough for HH:MM:SS:FF at the mono step, so the strip never reflows as
+   the hours digit appears. */
+.ve-transport-timecode {
+  width: 104px;
+  flex: 0 0 auto;
+}
+
+.ve-transport-timecode .ve-field,
+.ve-transport-timecode .ve-field-row {
+  width: 100%;
+}
+
+/* On the well, text is --text-on-well and nothing else: --text-ink is dark in the
+   daylight theme and --text-muted falls under the floor against this plane. The
+   shared IconButton resting colour is --text-muted, so it is lifted here — and
+   only at rest, because hover, active, pressed and disabled are the primitive's
+   own verified pairings and must not be re-implemented (PLAN §5). */
+.ve-transport .ve-iconbtn:not(:hover):not(:active):not([aria-pressed='true']):not([data-disabled='true']) {
+  color: var(--text-on-well);
+}
+
+.ve-transport-duration,
+.ve-transport-rate {
+  color: var(--text-on-well);
+  white-space: nowrap;
+}
+
+/* Reserved width so the shuttle read-out cannot shift the duration beside it. */
+.ve-transport-rate {
+  min-width: 32px;
+  text-align: right;
+}

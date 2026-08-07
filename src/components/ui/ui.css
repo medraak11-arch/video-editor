@@ -1,0 +1,673 @@
+/* ---------------------------------------------------------------------------
+   ui.css — the nine shared primitives. PLAN §5.
+
+   All seven states are implemented HERE, once: default, hover, focus-visible,
+   active, disabled, loading, error. Slices get them for free and must not
+   re-implement hover or focus styling on top.
+
+   No colour literal, no z-index literal, no literal duration.
+--------------------------------------------------------------------------- */
+
+/* ============================================================ shared bits */
+
+.ve-spinner {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 1.5px solid var(--border-structural);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: ve-spin 700ms linear infinite;
+}
+
+@keyframes ve-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* Reduced motion swaps the spinner for this static glyph in JS; the class exists
+   so the two occupy exactly the same 12px slot. */
+.ve-spinner-static {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+}
+
+.ve-icon-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+/* ================================================================= Button */
+
+.ve-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  height: 28px;
+  padding: 0 var(--space-lg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  letter-spacing: var(--type-label-track);
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    color var(--dur-feedback) var(--ease-out),
+    border-color var(--dur-feedback) var(--ease-out);
+}
+
+.ve-btn[data-size='sm'] {
+  height: 24px;
+  padding: 0 var(--space-md);
+}
+
+.ve-btn:focus {
+  outline: none;
+}
+
+.ve-btn:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* primary — one per view, maximum. The Export button is the canonical instance. */
+.ve-btn[data-variant='primary'] {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.ve-btn[data-variant='primary']:hover:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--accent-hover);
+}
+
+.ve-btn[data-variant='primary']:active:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--accent-hover);
+}
+
+/* secondary — the default button. Most buttons in this app are secondary. */
+.ve-btn[data-variant='secondary'] {
+  background: var(--surface-raised);
+  color: var(--text-ink);
+}
+
+.ve-btn[data-variant='secondary']:hover:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--surface-raised-hover);
+}
+
+.ve-btn[data-variant='secondary']:active:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--surface-panel-hover);
+}
+
+/* ghost — toolbar buttons. Text lifts to ink on hover; --text-muted is forbidden on
+   any -hover surface (PLAN §7.1). */
+.ve-btn[data-variant='ghost'] {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.ve-btn[data-variant='ghost']:hover:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--surface-raised);
+  color: var(--text-ink);
+}
+
+.ve-btn[data-variant='ghost']:active:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--surface-raised-hover);
+  color: var(--text-ink);
+}
+
+/* disabled — token-based, NEVER opacity. Background unchanged, focus ring retained,
+   element stays in the tab order, reason renders in the tooltip. */
+.ve-btn[data-disabled='true'] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* loading — content stays in place, pointer events off, no opacity dimming. */
+.ve-btn[data-loading='true'] {
+  cursor: progress;
+  pointer-events: none;
+}
+
+/* error */
+.ve-btn[data-invalid='true'] {
+  border-color: var(--status-danger);
+}
+
+/* ============================================================= IconButton */
+
+.ve-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    color var(--dur-feedback) var(--ease-out);
+}
+
+.ve-iconbtn[data-size='sm'] {
+  width: 24px;
+  height: 24px;
+}
+
+.ve-iconbtn[data-variant='secondary'] {
+  background: var(--surface-raised);
+  color: var(--text-ink);
+}
+
+.ve-iconbtn:focus {
+  outline: none;
+}
+
+.ve-iconbtn:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.ve-iconbtn:hover:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--surface-raised);
+  color: var(--text-ink);
+}
+
+.ve-iconbtn[data-variant='secondary']:hover:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--surface-raised-hover);
+}
+
+.ve-iconbtn:active:not([data-disabled='true']):not([data-loading='true']) {
+  background: var(--surface-raised-hover);
+  color: var(--text-ink);
+}
+
+/* pressed — a lightness change plus a distinct glyph. Enough to carry a binary state
+   without spending accent. */
+.ve-iconbtn[aria-pressed='true'] {
+  background: var(--surface-raised-hover);
+  color: var(--text-ink);
+}
+
+/* The ONE opt-in accent toggle: track-head mute / lock / visibility (PLAN §7.4 use 5). */
+.ve-iconbtn[aria-pressed='true'][data-accent-pressed='true'] {
+  color: var(--accent);
+}
+
+.ve-iconbtn[data-tone='danger']:hover:not([data-disabled='true']) {
+  background: var(--status-danger);
+  color: var(--text-on-danger);
+}
+
+.ve-iconbtn[data-tone='danger']:active:not([data-disabled='true']) {
+  background: var(--status-danger-hover);
+  color: var(--text-on-danger);
+}
+
+.ve-iconbtn[data-disabled='true'] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.ve-iconbtn[data-loading='true'] {
+  cursor: progress;
+  pointer-events: none;
+}
+
+/* ========================================================= NumericField &
+   TimecodeField — fields recede, they do not float.                        */
+
+.ve-field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.ve-field-input {
+  width: 100%;
+  height: 26px;
+  padding: 0 var(--space-md);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-well);
+  color: var(--text-ink);
+  font-family: var(--font-mono);
+  font-size: var(--type-numeric-size);
+  font-weight: var(--type-numeric-weight);
+  line-height: var(--type-numeric-line);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+  cursor: ew-resize;
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    border-color var(--dur-feedback) var(--ease-out);
+}
+
+/* A well field on a well surface has zero tonal separation and fails The Audit Test,
+   so the transport variant recedes by hairline instead (PLAN §5). */
+.ve-field[data-surface='well'] .ve-field-input {
+  background: transparent;
+  color: var(--text-on-well);
+  border-radius: 0;
+  border-bottom: 1px solid var(--border-hairline-strong);
+  padding-left: var(--space-xs);
+  padding-right: var(--space-xs);
+}
+
+.ve-field-input:focus {
+  outline: none;
+}
+
+.ve-field-input:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: var(--focus-ring-offset);
+  cursor: text;
+}
+
+.ve-field-input:hover:not([data-disabled='true']) {
+  background: var(--surface-panel-hover);
+}
+
+.ve-field[data-surface='well'] .ve-field-input:hover:not([data-disabled='true']) {
+  background: transparent;
+  border-bottom-color: var(--border-structural);
+}
+
+.ve-field-input[data-scrubbing='true'] {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.ve-field-input[data-mixed='true'] {
+  color: var(--text-muted);
+}
+
+.ve-field-input[data-disabled='true'] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.ve-field-input[data-invalid='true'] {
+  border-color: var(--status-danger);
+}
+
+/* --- TextField -------------------------------------------------------------
+   Same shell, same recess, same states as NumericField. Text takes the sans
+   family and a text caret; there is no drag-scrub on a filename. */
+
+.ve-field-input-text {
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  line-height: var(--type-body-line);
+  letter-spacing: var(--type-body-track);
+  font-variant-numeric: normal;
+  cursor: text;
+}
+
+.ve-field-input-text::placeholder {
+  color: var(--text-muted);
+}
+
+/* A read-only field is not a disabled field: it keeps its contrast and stays
+   focusable and copyable, it simply is not typed into. */
+.ve-field-input-text[data-readonly='true'] {
+  cursor: default;
+}
+
+/* --- Select ----------------------------------------------------------------
+   Native <select>, so the popup, type-ahead and screen-reader semantics are the
+   platform's. Only the closed face is ours. */
+
+.ve-select-shell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ve-select {
+  appearance: none;
+  padding-right: var(--space-xxl);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  line-height: var(--type-body-line);
+  letter-spacing: var(--type-body-track);
+  font-variant-numeric: normal;
+  cursor: pointer;
+}
+
+/* §7.2's Tabular Rule: resolution and frame rate are numerals that change. */
+.ve-select[data-numeric='true'] {
+  font-family: var(--font-mono);
+  font-size: var(--type-numeric-size);
+  font-weight: var(--type-numeric-weight);
+  line-height: var(--type-numeric-line);
+  letter-spacing: var(--type-numeric-track);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/* The OS paints the open list; give it the panel plane so it is not white-on-white
+   in the two dark themes. */
+.ve-select option {
+  background: var(--surface-panel);
+  color: var(--text-ink);
+}
+
+.ve-select-chevron {
+  position: absolute;
+  right: var(--space-md);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.ve-select:hover:not([data-disabled='true']) + .ve-select-chevron,
+.ve-select:focus-visible + .ve-select-chevron {
+  color: var(--text-ink);
+}
+
+.ve-field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.ve-field-suffix {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.ve-field-message {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-ink);
+}
+
+.ve-field-message .ve-icon-slot {
+  color: var(--status-danger);
+}
+
+/* =========================================================== InlineNotice
+   The ONLY error/warning presentation surface in the app. Title and message
+   are always --text-ink: status colour is never a text colour (PLAN §7.6).  */
+
+.ve-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--status-danger);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-ink);
+}
+
+.ve-notice[data-tone='warning'] {
+  border-color: var(--status-warning);
+}
+
+.ve-notice-icon {
+  color: var(--status-danger);
+  margin-top: 1px;
+}
+
+.ve-notice[data-tone='warning'] .ve-notice-icon {
+  color: var(--status-warning);
+}
+
+.ve-notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-hair);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ve-notice-title {
+  color: var(--text-ink);
+}
+
+.ve-notice-message {
+  color: var(--text-ink);
+}
+
+.ve-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex: 0 0 auto;
+}
+
+/* ================================================================== Panel */
+
+.ve-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface-panel);
+  border-radius: var(--radius-lg);
+  color: var(--text-ink);
+  /* No shadow. Panels are in-flow; depth is tone (DESIGN.md §4). */
+}
+
+.ve-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-lg) var(--space-lg) var(--space-md);
+  border-bottom: 1px solid var(--border-hairline);
+  flex: 0 0 auto;
+}
+
+.ve-panel-heading {
+  color: var(--text-ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ve-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: 0 0 auto;
+}
+
+.ve-panel-body {
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ve-panel-body[data-padded='true'] {
+  padding: var(--space-lg);
+}
+
+.ve-panel-body[data-scroll='true'] {
+  overflow: auto;
+}
+
+/* ================================================================ Tooltip */
+
+.ve-tooltip {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  max-width: 280px;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  color: var(--text-ink);
+  box-shadow: var(--shadow-popover);
+  pointer-events: none;
+}
+
+.ve-tooltip-shortcut {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+/* ================================================================= Dialog */
+
+.ve-dialog {
+  margin: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.ve-dialog::backdrop {
+  background: var(--scrim);
+  /* Blur is permitted only where it functions — behind an open modal scrim. */
+  backdrop-filter: blur(2px);
+}
+
+.ve-dialog-surface {
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  border-radius: var(--radius-lg);
+  background: var(--surface-panel);
+  color: var(--text-ink);
+  box-shadow: var(--shadow-dialog);
+}
+
+.ve-dialog-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-xl) var(--space-xl) var(--space-lg);
+  flex: 0 0 auto;
+}
+
+.ve-dialog-title {
+  color: var(--text-ink);
+}
+
+.ve-dialog-description {
+  color: var(--text-muted);
+}
+
+.ve-dialog-body {
+  padding: 0 var(--space-xl);
+  overflow: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.ve-dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-md);
+  padding: var(--space-lg) var(--space-xl) var(--space-xl);
+  flex: 0 0 auto;
+}
+
+/* =================================================================== Menu */
+
+.ve-menu {
+  position: fixed;
+  z-index: var(--z-menu);
+  min-width: 200px;
+  padding: var(--space-xs);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  color: var(--text-ink);
+  box-shadow: var(--shadow-popover);
+}
+
+.ve-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--space-md);
+  border-radius: var(--radius-sm);
+  color: var(--text-ink);
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  text-align: left;
+  transition: background-color var(--dur-feedback) var(--ease-out);
+}
+
+.ve-menu-item:focus {
+  outline: none;
+}
+
+.ve-menu-item:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: calc(-1 * var(--focus-ring-width));
+}
+
+.ve-menu-item:hover:not([data-disabled='true']) {
+  background: var(--surface-panel-hover);
+}
+
+.ve-menu-item:active:not([data-disabled='true']) {
+  background: var(--surface-raised);
+}
+
+.ve-menu-item[data-disabled='true'] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.ve-menu-item-lead {
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.ve-menu-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ve-menu-item-shortcut {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.ve-menu-separator {
+  height: 1px;
+  margin: var(--space-xs) var(--space-sm);
+  background: var(--border-hairline);
+}
+
+.ve-menu-label {
+  padding: var(--space-sm) var(--space-md) var(--space-xs);
+  color: var(--text-muted);
+}

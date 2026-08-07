@@ -1,0 +1,102 @@
+/* ---------------------------------------------------------------------------
+   projectActions.ts — the renderer half of 'project:save' / 'project:open'.
+
+   Ctrl+S routes here from the shortcut layer; the titlebar overflow menu can
+   call the same two functions so there is exactly one save path and one open
+   path in the app. Both are quiet on cancel and report every real failure
+   through `setNotice`, which the titlebar renders as an InlineNotice (PLAN §5).
+
+   `isDirty` is written only by the store's markDirty / markSaved. A successful
+   save calls markSaved, and that is what clears the titlebar's unsaved dot.
+--------------------------------------------------------------------------- */
+
+import { getEditorAPI } from '../lib/editorApi';
+import { applyProject, migrateProject, serializeProject } from '../lib/project';
+import { readStore } from '../state/store';
+
+/** Basename without the .veproj extension. The renderer has no node `path`. */
+function projectNameFromPath(filePath: string): string {
+  const base = filePath.split(/[\\/]/).pop() ?? filePath;
+  return base.replace(/\.veproj$/i, '') || 'Untitled';
+}
+
+let saveInFlight = false;
+let openInFlight = false;
+
+/**
+ * Writes the project. With no path yet — or with `saveAs` — the main process
+ * opens the native save dialog. Cancelling is not a failure and says nothing.
+ */
+export async function saveProject(opts?: { saveAs?: boolean }): Promise<void> {
+  if (saveInFlight) return;
+  saveInFlight = true;
+  try {
+    const before = readStore();
+    const result = await getEditorAPI().project.save(serializeProject(before), {
+      path: before.projectPath,
+      saveAs: opts?.saveAs === true,
+    });
+
+    const store = readStore();
+    if (!result.ok) {
+      if (result.error.code !== 'cancelled') {
+        store.setNotice({ tone: 'danger', title: 'Save failed', message: result.error.message });
+      }
+      return;
+    }
+
+    store.setProjectPath(result.path);
+    store.setProjectName(projectNameFromPath(result.path));
+    // Last, because setProjectName is on the markDirty list (PLAN §3.1).
+    store.markSaved();
+    store.setNotice(null);
+  } finally {
+    saveInFlight = false;
+  }
+}
+
+/**
+ * Opens a .veproj. The main process hands back the raw parsed object; the
+ * renderer is where `migrateProject` decides whether it is a project at all
+ * (PLAN §2.6), so a JSON file that is not one lands as 'bad-format' here
+ * rather than hydrating the store with rubbish.
+ */
+export async function openProject(): Promise<void> {
+  if (openInFlight) return;
+  openInFlight = true;
+  try {
+    const result = await getEditorAPI().project.open();
+    const store = readStore();
+
+    if (!result.ok) {
+      if (result.error.code !== 'cancelled') {
+        store.setNotice({
+          tone: 'danger',
+          title: 'Could not open',
+          message: result.error.message,
+        });
+      }
+      return;
+    }
+
+    const project = migrateProject(result.project);
+    if (!project) {
+      store.setNotice({
+        tone: 'danger',
+        title: 'Could not open',
+        message: 'That file is not a video editor project',
+      });
+      return;
+    }
+
+    // applyProject calls the four hydrate actions in order; every hydrate resets
+    // history and calls markSaved, so Ctrl+Z cannot reach the previous project.
+    applyProject(project);
+    const after = readStore();
+    after.setProjectPath(result.path);
+    after.markSaved();
+    after.setNotice(null);
+  } finally {
+    openInFlight = false;
+  }
+}

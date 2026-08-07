@@ -1,0 +1,248 @@
+/* ---------------------------------------------------------------------------
+   shell.css — the application frame. Shell-owned.
+
+   Colour comes only from the §7.1 tokens; geometry and motion only from §7.3.
+   --accent appears nowhere in this file: the accent budget (PLAN §7.4) spends
+   its four families on time, selection/focus, active toggles and the one
+   primary action, and none of those live in the frame. The focus ring — which
+   IS the sanctioned use — is inherited from base.css.
+
+   Four in-flow planes, no shadow: the frame is --surface-chrome throughout, the
+   rail and inspector bodies paint --surface-panel (their own Panel does that),
+   and the stage is left as chrome so the reserved inspector strip reads as the
+   gutter it is.
+--------------------------------------------------------------------------- */
+
+/* ============================================================== titlebar === */
+
+.shell-titlebar {
+  position: relative;
+  z-index: var(--z-titlebar);
+  flex: 0 0 auto;
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.shell-titlebar-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-lg);
+  height: var(--titlebar-height);
+  padding-inline: var(--space-sm);
+}
+
+.shell-titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.shell-titlebar-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-width: 0;
+  color: var(--text-ink);
+}
+
+.shell-titlebar-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The unsaved marker: a muted bullet on the name, never a free-floating dot,
+   and never the accent (PLAN §7.4 forbids it explicitly). */
+.shell-titlebar-dirty {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.shell-titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex: 0 0 auto;
+}
+
+.shell-window-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-hair);
+}
+
+.shell-titlebar-notice {
+  padding: 0 var(--space-md) var(--space-md);
+}
+
+/* ============================================================ frame grid ===
+   Columns: rail | rail resizer | stage.   Rows: stage | timeline resizer |
+   timeline. The timeline spans every column, so it is full width by
+   construction rather than by arithmetic. */
+
+.shell-body {
+  /* Local layout variables, PLAN §8.2. Declared here so the frame is correct on
+     first paint; PanelGroup overrides them inline (rail) and imperatively
+     (timeline height, from the measured grid box). Not colours, not :root. */
+  --rail-w: var(--rail-width-default);
+  --rail-gutter: var(--resizer-hit);
+  --timeline-h: 38vh;
+
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--rail-w) var(--rail-gutter) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--resizer-hit) var(--timeline-h);
+  background: var(--surface-chrome);
+}
+
+.shell-rail {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--space-sm);
+  border-right: 1px solid var(--border-hairline-strong);
+}
+
+.shell-rail > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.shell-rail-resizer {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.shell-stage {
+  grid-column: 3;
+  grid-row: 1;
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  /* Reserved permanently, inspector mounted or not, so the letterbox box never
+     moves when the selection changes (PLAN §8.11). */
+  padding-right: var(--inspector-width);
+}
+
+.shell-stage > :not(.shell-inspector) {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.shell-timeline-resizer {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.shell-timeline {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border-hairline-strong);
+}
+
+.shell-timeline > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ============================================================= inspector ===
+   Absolutely positioned over the stage at every width — never a grid column.
+   Mounts on selection, animates in on transform and opacity only. */
+
+.shell-inspector {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  z-index: var(--z-inspector);
+  display: flex;
+  width: var(--inspector-width);
+  min-height: 0;
+  padding: var(--space-sm);
+  border-left: 1px solid var(--border-hairline-strong);
+  background: var(--surface-chrome);
+  animation: shell-inspector-in var(--dur-panel) var(--ease-out) both;
+}
+
+.shell-inspector > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+@keyframes shell-inspector-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--space-lg));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ============================================================== resizers ===
+   Invisible at rest; a 1 px --border-structural line down the centre of the
+   5 px target on hover and focus; the whole track lifts one plane while
+   dragging, so pointer-down is a lightness change rather than a hue change.
+   The +2 px focus ring comes from base.css and is never removed. */
+
+.shell-resizer {
+  position: relative;
+  z-index: var(--z-resizer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  touch-action: none;
+  transition: background-color var(--dur-feedback) var(--ease-out);
+}
+
+.shell-resizer[data-orientation='vertical'] {
+  cursor: col-resize;
+}
+
+.shell-resizer[data-orientation='horizontal'] {
+  cursor: row-resize;
+}
+
+.shell-resizer-line {
+  display: block;
+  background: var(--border-structural);
+  opacity: 0;
+  transition: opacity var(--dur-feedback) var(--ease-out);
+}
+
+.shell-resizer[data-orientation='vertical'] .shell-resizer-line {
+  width: 1px;
+  height: 100%;
+}
+
+.shell-resizer[data-orientation='horizontal'] .shell-resizer-line {
+  width: 100%;
+  height: 1px;
+}
+
+.shell-resizer:hover .shell-resizer-line,
+.shell-resizer:focus-visible .shell-resizer-line,
+.shell-resizer[data-dragging='true'] .shell-resizer-line {
+  opacity: 1;
+}
+
+.shell-resizer[data-dragging='true'] {
+  background: var(--surface-raised);
+}

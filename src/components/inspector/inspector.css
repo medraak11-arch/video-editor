@@ -1,0 +1,113 @@
+/* ---------------------------------------------------------------------------
+   inspector.css — the properties column.
+
+   Panel tone, radius and padding come from the Panel primitive; nothing here
+   invents a plane. No colour literal, no z-index literal, no literal duration,
+   and no accent — the accent budget (PLAN §7.4) spends nothing in the
+   inspector, so the focus ring from base.css is the only accent that appears.
+--------------------------------------------------------------------------- */
+
+.ve-inspector {
+  width: 100%;
+  height: 100%;
+}
+
+.ve-inspector-groups {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ================================================================== group */
+
+.ve-group {
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.ve-group:last-child {
+  border-bottom: 0;
+}
+
+.ve-group-heading {
+  margin: 0;
+}
+
+.ve-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-lg);
+  color: var(--text-muted);
+  text-align: left;
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    color var(--dur-feedback) var(--ease-out);
+}
+
+.ve-group-toggle:hover {
+  background: var(--surface-panel-hover);
+  color: var(--text-ink);
+}
+
+.ve-group-toggle:active {
+  background: var(--surface-raised);
+  color: var(--text-ink);
+}
+
+/* focus-visible is the +2px accent ring declared once in base.css. */
+
+.ve-group-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  transition: transform var(--dur-feedback) var(--ease-out);
+}
+
+.ve-group-chevron[data-open='true'] {
+  transform: rotate(90deg);
+}
+
+.ve-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-lg) var(--space-lg);
+}
+
+/* The UA's [hidden] rule loses to the class above, so restate it. */
+.ve-group-body[hidden] {
+  display: none;
+}
+
+/* =========================================================== property row */
+
+.ve-prop-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-md);
+  min-height: 26px;
+}
+
+.ve-prop-label {
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A column, so a control can carry a message underneath it without the row
+   turning into two side-by-side things. */
+.ve-prop-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.ve-prop-control > * {
+  min-width: 0;
+}

@@ -1,0 +1,51 @@
+{
+  "name": "video-editor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "description": "A desktop video editor whose chrome stays dark and quiet so the frame is the only lit thing on screen.",
+  "scripts": {
+    "dev:web": "vite",
+    "dev": "concurrently -k \"vite\" \"npm:dev:electron\"",
+    "dev:electron": "node scripts/electron-pkg.mjs && tsc -p tsconfig.electron.json && wait-on dist-electron/electron/main.js http://localhost:5173 && cross-env ELECTRON=1 VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "build": "npm run typecheck && vite build && npm run build:electron",
+    "build:electron": "node scripts/electron-pkg.mjs && tsc -p tsconfig.electron.json",
+    "start": "electron .",
+    "contract": "node scripts/check-contract.mjs",
+    "fixtures:media": "node scripts/make-dev-media.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.1.1",
+    "@fontsource-variable/inter": "^5.1.1",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "dev.local.videoeditor",
+    "productName": "Video Editor",
+    "files": [
+      "dist/**",
+      "dist-electron/**"
+    ],
+    "directories": {
+      "output": "release"
+    }
+  }
+}

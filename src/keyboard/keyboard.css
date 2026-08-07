@@ -1,0 +1,85 @@
+/* ---------------------------------------------------------------------------
+   keyboard.css — the shortcut hint chip and the `?` overlay.
+
+   No colour literal, no z-index literal, no literal duration, no accent: the
+   accent budget (PLAN §7.4) spends nothing here, and the overlay's focus rings
+   come from base.css.
+--------------------------------------------------------------------------- */
+
+/* ========================================================== ShortcutHint */
+
+.ve-shortcut-hint {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.ve-shortcut-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-hair);
+}
+
+.ve-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--space-xs);
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-ink);
+  white-space: nowrap;
+}
+
+/* ======================================================= ShortcutOverlay */
+
+.ve-shortcut-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  padding-bottom: var(--space-xs);
+}
+
+.ve-shortcut-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.ve-shortcut-section-heading {
+  color: var(--text-ink);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.ve-shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-hair);
+}
+
+.ve-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xl);
+  min-height: 26px;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+}
+
+.ve-shortcut-label {
+  color: var(--text-ink);
+  min-width: 0;
+}
+
+.ve-shortcut-value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
+  flex: 0 0 auto;
+}

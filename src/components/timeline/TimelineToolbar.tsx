@@ -1,0 +1,142 @@
+/* ---------------------------------------------------------------------------
+   TimelineToolbar — PLAN §8.16.
+
+   Five actions had shortcuts and no control, which makes them keyboard-only and
+   undercuts PRODUCT.md principle 3: the UI teaches its shortcuts on the controls
+   themselves. Every button here carries `shortcut={<ShortcutHint id="…" />}`,
+   read from the one registry, so a label can never drift from its binding.
+
+   The snap toggle is `pressed` WITHOUT `accentWhenPressed` — a lightness change
+   plus a distinct glyph, which is enough for a binary state and spends none of
+   the accent budget (PLAN §7.4).
+
+   Chrome plane, no Panel, no layout constant of its own.
+--------------------------------------------------------------------------- */
+
+import './timeline.css';
+import { useCallback } from 'react';
+import type { ReactElement, RefObject } from 'react';
+import { Bookmark, Magnet, Maximize2, Scissors, ZoomIn, ZoomOut } from 'lucide-react';
+import { IconButton } from '../ui';
+import { ShortcutHint } from '../../keyboard/ShortcutHint';
+import { readStore, useEditorStore } from '../../state/store';
+import { selectSelectionCount } from '../../state/timelineSlice';
+import { TRACK_HEAD_WIDTH, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from '../../lib/constants';
+
+export interface TimelineToolbarProps {
+  laneViewportRef: RefObject<HTMLDivElement>;
+}
+
+const clampZoom = (zoom: number): number => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
+
+export function TimelineToolbar({ laneViewportRef }: TimelineToolbarProps): ReactElement {
+  const zoom = useEditorStore((s) => s.zoom);
+  const snapEnabled = useEditorStore((s) => s.snapEnabled);
+  const selectionCount = useEditorStore(selectSelectionCount);
+
+  const onSplit = useCallback(() => {
+    const s = readStore();
+    const before = Object.keys(s.clips).length;
+    s.splitAtPlayhead();
+    // Enabled and explains on use, rather than disabled and silent (PLAN §5).
+    if (Object.keys(readStore().clips).length === before) {
+      s.setNotice({
+        tone: 'warning',
+        title: 'Nothing to split',
+        message: 'Park the playhead over a clip first',
+      });
+    }
+  }, []);
+
+  const onMarker = useCallback(() => {
+    readStore().addMarker();
+  }, []);
+
+  const onSnap = useCallback(() => {
+    const s = readStore();
+    s.setSnapEnabled(!s.snapEnabled);
+  }, []);
+
+  const onZoomIn = useCallback(() => {
+    const s = readStore();
+    s.setZoom(clampZoom(s.zoom * ZOOM_STEP));
+  }, []);
+
+  const onZoomOut = useCallback(() => {
+    const s = readStore();
+    s.setZoom(clampZoom(s.zoom / ZOOM_STEP));
+  }, []);
+
+  const onZoomFit = useCallback(() => {
+    const width = laneViewportRef.current?.clientWidth;
+    readStore().zoomToFit(width && width > 0 ? width : window.innerWidth - TRACK_HEAD_WIDTH);
+  }, [laneViewportRef]);
+
+  return (
+    <div className="tl-toolbar" role="toolbar" aria-label="Timeline">
+      <IconButton
+        size="sm"
+        icon={<Scissors size={14} strokeWidth={1.75} />}
+        label="Split at playhead"
+        shortcut={<ShortcutHint id="edit.split" />}
+        onClick={onSplit}
+      />
+      <IconButton
+        size="sm"
+        icon={<Bookmark size={14} strokeWidth={1.75} />}
+        label="Add marker at playhead"
+        shortcut={<ShortcutHint id="edit.marker" />}
+        onClick={onMarker}
+      />
+
+      <span className="tl-toolbar-sep" aria-hidden="true" />
+
+      <IconButton
+        size="sm"
+        icon={<Magnet size={14} strokeWidth={1.75} />}
+        label={snapEnabled ? 'Turn snapping off' : 'Turn snapping on'}
+        pressed={snapEnabled}
+        onClick={onSnap}
+      />
+
+      <span className="tl-toolbar-sep" aria-hidden="true" />
+
+      <IconButton
+        size="sm"
+        icon={<ZoomOut size={14} strokeWidth={1.75} />}
+        label="Zoom out"
+        shortcut={<ShortcutHint id="view.zoomOut" />}
+        onClick={onZoomOut}
+      />
+      <IconButton
+        size="sm"
+        icon={<ZoomIn size={14} strokeWidth={1.75} />}
+        label="Zoom in"
+        shortcut={<ShortcutHint id="view.zoomIn" />}
+        onClick={onZoomIn}
+      />
+      <IconButton
+        size="sm"
+        icon={<Maximize2 size={14} strokeWidth={1.75} />}
+        label="Zoom to fit"
+        shortcut={<ShortcutHint id="view.zoomFit" />}
+        onClick={onZoomFit}
+      />
+
+      <span className="tl-toolbar-spacer" />
+
+      {selectionCount > 0 ? (
+        <span className="tl-toolbar-count type-numeric-sm">
+          {selectionCount}
+          <span className="type-label"> selected</span>
+        </span>
+      ) : null}
+
+      <span className="tl-toolbar-readout type-numeric-sm">
+        <span className="sr-only">Zoom </span>
+        {zoom < 10 ? zoom.toFixed(2) : zoom.toFixed(1)}
+        <span className="type-label"> px/frame</span>
+      </span>
+    </div>
+  );
+}

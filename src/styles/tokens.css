@@ -1,0 +1,190 @@
+/* ---------------------------------------------------------------------------
+   tokens.css — the single source of colour, type, geometry and motion.
+
+   This is the ONLY file in the project permitted to contain a colour literal.
+   Every value here is copied from DESIGN.md / docs/PLAN.md §6 and §7; nothing is
+   re-derived. Five slices type these names, so a rename is a breaking change.
+
+   A theme swaps COLOUR tokens only. Type scale, spacing, radius, motion timing
+   and z-index are theme-invariant (DESIGN.md, The Palette-Only Rule).
+--------------------------------------------------------------------------- */
+
+/* ============================================================ 7.1 Colour ===
+   `signal` is the committed default and also fills :root, so a missing
+   data-theme attribute still renders the normative palette.                  */
+
+:root,
+:root[data-theme='signal'] {
+  --surface-well:          oklch(0.10  0.008 265);
+  --surface-chrome:        oklch(0.215 0.014 265);
+  --surface-panel:         oklch(0.255 0.016 265);
+  --surface-raised:        oklch(0.31  0.018 265);
+  --surface-panel-hover:   oklch(0.28  0.016 265);
+  --surface-raised-hover:  oklch(0.35  0.018 265);
+  --text-ink:              oklch(0.96  0.004 265);
+  --text-muted:            oklch(0.72  0.012 265);
+  --text-on-well:          oklch(0.96  0.004 265);
+  --text-on-accent:        oklch(0.17  0.03  68);
+  --text-on-danger:        oklch(0.18  0.03  22);
+  --text-on-warning:       oklch(0.20  0.04  100);
+  --accent:                oklch(0.75  0.15  68);
+  --accent-hover:          oklch(0.79  0.15  68);
+  --status-danger:         oklch(0.66  0.19  22);
+  --status-danger-hover:   oklch(0.70  0.19  22);
+  --status-warning:        oklch(0.90  0.15  100);
+  --border-hairline:        oklch(1 0 0 / 0.08);
+  --border-hairline-strong: oklch(1 0 0 / 0.16);
+  --border-structural:     oklch(0.58  0.014 265);
+  --scrim:                 oklch(0 0 0 / 0.56);
+  --texture-tint:          oklch(1 0 0 / 0.07);
+}
+
+:root[data-theme='instrument'] {
+  --surface-well:          oklch(0.10  0 0);
+  --surface-chrome:        oklch(0.205 0 0);
+  --surface-panel:         oklch(0.245 0 0);
+  --surface-raised:        oklch(0.30  0 0);
+  --surface-panel-hover:   oklch(0.27  0 0);
+  --surface-raised-hover:  oklch(0.34  0 0);
+  --text-ink:              oklch(0.96  0 0);
+  --text-muted:            oklch(0.70  0 0);
+  --text-on-well:          oklch(0.96  0 0);
+  --text-on-accent:        oklch(0.16  0.03  205);
+  --text-on-danger:        oklch(0.18  0.03  25);
+  --text-on-warning:       oklch(0.20  0.04  92);
+  --accent:                oklch(0.72  0.13  205);
+  --accent-hover:          oklch(0.76  0.13  205);
+  --status-danger:         oklch(0.66  0.19  25);
+  --status-danger-hover:   oklch(0.70  0.19  25);
+  --status-warning:        oklch(0.87  0.15  92);
+  --border-hairline:        oklch(1 0 0 / 0.08);
+  --border-hairline-strong: oklch(1 0 0 / 0.16);
+  --border-structural:     oklch(0.58  0 0);
+  --scrim:                 oklch(0 0 0 / 0.56);
+  --texture-tint:          oklch(1 0 0 / 0.07);
+}
+
+:root[data-theme='daylight'] {
+  --surface-well:          oklch(0.13  0 0);
+  --surface-chrome:        oklch(0.97  0.004 290);
+  --surface-panel:         oklch(1     0 0);
+  --surface-raised:        oklch(0.94  0.006 290);
+  --surface-panel-hover:   oklch(0.965 0.004 290);
+  --surface-raised-hover:  oklch(0.90  0.006 290);
+  --text-ink:              oklch(0.25  0.012 290);
+  --text-muted:            oklch(0.50  0.014 290);
+  --text-on-well:          oklch(0.96  0.002 290);
+  --text-on-accent:        oklch(0.99  0.002 290);
+  --text-on-danger:        oklch(0.99  0.002 290);
+  --text-on-warning:       oklch(0.99  0.002 290);
+  --accent:                oklch(0.533 0.125 294.3);
+  --accent-hover:          oklch(0.49  0.125 294.3);
+  --status-danger:         oklch(0.42  0.19  25);
+  --status-danger-hover:   oklch(0.38  0.19  25);
+  --status-warning:        oklch(0.55  0.13  72);
+  --border-hairline:        oklch(0 0 0 / 0.10);
+  --border-hairline-strong: oklch(0 0 0 / 0.18);
+  --border-structural:     oklch(0.60  0.014 290);
+  --scrim:                 oklch(0 0 0 / 0.56);
+  --texture-tint:          oklch(0 0 0 / 0.09);
+}
+
+/* ===================================================== theme-invariant ===
+   Textures are GEOMETRY, not colour: identical in all three themes, drawing
+   their single colour from --texture-tint above. They differ in angle AND
+   pitch so they are distinguishable under every colour-vision deficiency.
+   (PLAN §7.6.)                                                             */
+
+:root {
+  --texture-locked:  repeating-linear-gradient(135deg, transparent 0 3px, var(--texture-tint) 3px 6px);
+  --texture-muted:   repeating-linear-gradient(90deg,  transparent 0 2px, var(--texture-tint) 2px 3px);
+  --texture-offline: repeating-linear-gradient(45deg,  transparent 0 4px, var(--texture-tint) 4px 8px);
+  --texture-warning: repeating-linear-gradient(0deg,   transparent 0 3px, var(--texture-tint) 3px 4px);
+
+  /* ================================================================ 7.2 Type
+     One humanist sans carries the whole interface; the mono exists solely to
+     hold numerals that change while you watch them.                          */
+  --font-sans: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'Cascadia Mono',
+    'SF Mono', Menlo, Consolas, monospace;
+
+  --type-headline-size: 18px;
+  --type-headline-weight: 600;
+  --type-headline-line: 1.3;
+  --type-headline-track: -0.01em;
+
+  --type-title-size: 15px;
+  --type-title-weight: 600;
+  --type-title-line: 1.35;
+  --type-title-track: -0.005em;
+
+  --type-body-size: 13px;
+  --type-body-weight: 400;
+  --type-body-line: 1.45;
+  --type-body-track: normal;
+
+  --type-label-size: 11px;
+  --type-label-weight: 500;
+  --type-label-line: 1.3;
+  --type-label-track: 0.005em;
+
+  --type-numeric-size: 12px;
+  --type-numeric-weight: 400;
+  --type-numeric-line: 1.2;
+  --type-numeric-track: normal;
+
+  /* ======================================== 7.3 Radius, space, motion, layout */
+  --radius-clip: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --space-hair: 2px;
+  --space-xs: 4px;
+  --space-sm: 6px;
+  --space-md: 8px;
+  --space-lg: 12px;
+  --space-xl: 16px;
+  --space-xxl: 24px;
+
+  --dur-feedback: 120ms;   /* hover, focus, toggle */
+  --dur-transition: 180ms; /* the default; DESIGN.md band is 150-250 */
+  --dur-panel: 200ms;      /* inspector mount/unmount, rail collapse */
+  --dur-snap: 90ms;        /* timeline snap settle */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Shadows exist ONLY for genuinely floating layers: --z-menu and above. */
+  --shadow-popover: 0 8px 24px oklch(0 0 0 / 0.44), 0 2px 6px oklch(0 0 0 / 0.32);
+  --shadow-dialog: 0 24px 64px oklch(0 0 0 / 0.56);
+
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  --titlebar-height: 36px;
+  --rail-width-default: 260px;
+  --inspector-width: 280px;
+  --track-head-width: 88px;
+  --ruler-height: 28px;
+  --timeline-toolbar-height: 32px;
+  --resizer-hit: 5px;
+
+  /* ============================================ 6. Semantic z-index scale ===
+     A numeric z-index literal anywhere in slice code is a bug.               */
+  --z-base: 0;             /* lane background, track lanes */
+  --z-clip: 10;            /* resting clips */
+  --z-clip-dragging: 20;   /* the clip(s) under the pointer */
+  --z-snap-guide: 25;      /* the 1px accent snap line */
+  --z-playhead: 30;        /* the playhead LINE through the lanes */
+  --z-timeline-ruler: 40;  /* sticky top of the lane area */
+  --z-track-heads: 45;     /* sticky left column */
+  --z-playhead-head: 46;   /* the playhead MARKER inside the ruler */
+  --z-marquee: 50;         /* selection rectangle */
+  --z-resizer: 60;         /* panel splitters */
+  --z-inspector: 70;       /* the inspector overlays the preview at every width */
+  --z-titlebar: 80;
+  --z-drop-overlay: 90;    /* file-drop affordance over the whole window */
+  --z-menu: 100;           /* popovers, overflow menu, context menus */
+  --z-tooltip: 110;
+  --z-dialog-scrim: 120;
+  --z-dialog: 130;         /* export dialog, shortcut overlay */
+}

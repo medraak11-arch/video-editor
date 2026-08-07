@@ -1,0 +1,305 @@
+/* ---------------------------------------------------------------------------
+   shortcuts.ts — PLAN §8.10. THE single source of truth for every binding.
+
+   Tooltips, the timeline toolbar and the shortcut overlay all read this
+   registry, so a label can never drift from its keys. Nothing in the app types
+   a key string into a tooltip.
+
+   A combo is normalised as `[Ctrl+][Shift+][Alt+]<Key>`, in that order.
+   'Ctrl' is the platform accelerator: Cmd on darwin, Ctrl everywhere else —
+   resolved at match time by `comboFromEvent` and at render time by
+   `ShortcutHint`.
+--------------------------------------------------------------------------- */
+
+import { getEditorAPI } from '../lib/editorApi';
+
+export type Platform = 'win32' | 'darwin' | 'linux';
+
+export type ShortcutScope = 'global' | 'timeline' | 'preview' | 'media' | 'dialog';
+
+export type ShortcutId =
+  | 'play.toggle'
+  | 'shuttle.back'
+  | 'shuttle.stop'
+  | 'shuttle.forward'
+  | 'mark.in'
+  | 'mark.out'
+  | 'edit.split'
+  | 'nav.stepBack'
+  | 'nav.stepForward'
+  | 'nav.secondBack'
+  | 'nav.secondForward'
+  | 'nav.start'
+  | 'nav.end'
+  | 'edit.lift'
+  | 'edit.ripple'
+  | 'edit.undo'
+  | 'edit.redo'
+  | 'file.import'
+  | 'file.save'
+  // Added by this slice, beyond the union printed in PLAN §8.10. Without it the
+  // 'project:open' channel and the whole migrateProject guard path have no
+  // entry point in the UI, and the slice spec requires open to work. Purely
+  // additive: SHORTCUT_BY_ID stays total, so no consumer changes.
+  | 'file.open'
+  | 'view.zoomIn'
+  | 'view.zoomOut'
+  | 'view.zoomFit'
+  | 'edit.marker'
+  | 'edit.clearSelection'
+  | 'help.shortcuts';
+
+/** The name of the function `useShortcuts` dispatches to. One per registry row. */
+export type ShortcutHandlerName =
+  | 'togglePlay'
+  | 'shuttleBack'
+  | 'shuttleStop'
+  | 'shuttleForward'
+  | 'markIn'
+  | 'markOut'
+  | 'splitAtPlayhead'
+  | 'stepBack'
+  | 'stepForward'
+  | 'secondBack'
+  | 'secondForward'
+  | 'goToStart'
+  | 'goToEnd'
+  | 'lift'
+  | 'rippleDelete'
+  | 'undo'
+  | 'redo'
+  | 'importMedia'
+  | 'saveProject'
+  | 'openProject'
+  | 'zoomIn'
+  | 'zoomOut'
+  | 'zoomToFit'
+  | 'addMarker'
+  | 'clearSelection'
+  | 'toggleShortcutOverlay';
+
+export interface ShortcutDef {
+  id: ShortcutId;
+  /** Normalised combos, e.g. 'Space', 'Ctrl+Z', 'Shift+ArrowLeft'. */
+  keys: string[];
+  /** Sentence case, imperative: 'Split at playhead'. */
+  label: string;
+  scope: ShortcutScope;
+  handler: ShortcutHandlerName;
+}
+
+/* ------------------------------------------------------------------ registry
+   Scope is focus containment, not hover (PLAN §8.10): a non-global row fires
+   only while focus sits inside the region whose container carries the matching
+   `data-shortcut-scope`. Transport, navigation and file actions are global
+   because they read state that belongs to no single region; the destructive
+   and view-shaping edits are timeline-scoped so Delete in the media rail can
+   never remove a clip from the timeline. */
+
+export const SHORTCUTS: readonly ShortcutDef[] = [
+  // --- transport ----------------------------------------------------------
+  { id: 'play.toggle', keys: ['Space'], label: 'Play or pause', scope: 'global', handler: 'togglePlay' },
+  { id: 'shuttle.back', keys: ['J'], label: 'Shuttle backward', scope: 'global', handler: 'shuttleBack' },
+  { id: 'shuttle.stop', keys: ['K'], label: 'Stop shuttle', scope: 'global', handler: 'shuttleStop' },
+  { id: 'shuttle.forward', keys: ['L'], label: 'Shuttle forward', scope: 'global', handler: 'shuttleForward' },
+
+  // --- navigation ---------------------------------------------------------
+  { id: 'nav.stepBack', keys: ['ArrowLeft'], label: 'Step back one frame', scope: 'global', handler: 'stepBack' },
+  { id: 'nav.stepForward', keys: ['ArrowRight'], label: 'Step forward one frame', scope: 'global', handler: 'stepForward' },
+  { id: 'nav.secondBack', keys: ['Shift+ArrowLeft'], label: 'Step back one second', scope: 'global', handler: 'secondBack' },
+  { id: 'nav.secondForward', keys: ['Shift+ArrowRight'], label: 'Step forward one second', scope: 'global', handler: 'secondForward' },
+  { id: 'nav.start', keys: ['Home'], label: 'Go to start', scope: 'global', handler: 'goToStart' },
+  { id: 'nav.end', keys: ['End'], label: 'Go to end', scope: 'global', handler: 'goToEnd' },
+
+  // --- marking ------------------------------------------------------------
+  { id: 'mark.in', keys: ['I'], label: 'Mark in', scope: 'global', handler: 'markIn' },
+  { id: 'mark.out', keys: ['O'], label: 'Mark out', scope: 'global', handler: 'markOut' },
+
+  // --- editing ------------------------------------------------------------
+  { id: 'edit.split', keys: ['S'], label: 'Split at playhead', scope: 'timeline', handler: 'splitAtPlayhead' },
+  { id: 'edit.lift', keys: ['Delete'], label: 'Lift selection', scope: 'timeline', handler: 'lift' },
+  { id: 'edit.ripple', keys: ['Shift+Delete'], label: 'Ripple delete selection', scope: 'timeline', handler: 'rippleDelete' },
+  { id: 'edit.marker', keys: ['M'], label: 'Add marker at playhead', scope: 'timeline', handler: 'addMarker' },
+  { id: 'edit.undo', keys: ['Ctrl+Z'], label: 'Undo', scope: 'global', handler: 'undo' },
+  { id: 'edit.redo', keys: ['Ctrl+Shift+Z'], label: 'Redo', scope: 'global', handler: 'redo' },
+  { id: 'edit.clearSelection', keys: ['Escape'], label: 'Clear selection', scope: 'global', handler: 'clearSelection' },
+
+  // --- view ---------------------------------------------------------------
+  { id: 'view.zoomIn', keys: ['+', '='], label: 'Zoom in', scope: 'timeline', handler: 'zoomIn' },
+  { id: 'view.zoomOut', keys: ['-'], label: 'Zoom out', scope: 'timeline', handler: 'zoomOut' },
+  { id: 'view.zoomFit', keys: ['Shift+Z'], label: 'Zoom to fit', scope: 'timeline', handler: 'zoomToFit' },
+
+  // --- file ---------------------------------------------------------------
+  { id: 'file.import', keys: ['Ctrl+I'], label: 'Import media', scope: 'global', handler: 'importMedia' },
+  { id: 'file.save', keys: ['Ctrl+S'], label: 'Save project', scope: 'global', handler: 'saveProject' },
+  { id: 'file.open', keys: ['Ctrl+O'], label: 'Open project', scope: 'global', handler: 'openProject' },
+
+  // --- help ---------------------------------------------------------------
+  { id: 'help.shortcuts', keys: ['?'], label: 'Show keyboard shortcuts', scope: 'global', handler: 'toggleShortcutOverlay' },
+];
+
+export const SHORTCUT_BY_ID: Record<ShortcutId, ShortcutDef> = SHORTCUTS.reduce(
+  (acc, def) => {
+    acc[def.id] = def;
+    return acc;
+  },
+  {} as Record<ShortcutId, ShortcutDef>,
+);
+
+/** Every combo the registry binds, mapped to the rows that claim it. */
+export const SHORTCUTS_BY_COMBO: ReadonlyMap<string, readonly ShortcutDef[]> = (() => {
+  const map = new Map<string, ShortcutDef[]>();
+  for (const def of SHORTCUTS) {
+    for (const combo of def.keys) {
+      const list = map.get(combo);
+      if (list) list.push(def);
+      else map.set(combo, [def]);
+    }
+  }
+  return map;
+})();
+
+/** Overlay section order and copy. Sentence case, like everything else. */
+export const SCOPE_ORDER: readonly ShortcutScope[] = [
+  'global',
+  'timeline',
+  'preview',
+  'media',
+  'dialog',
+];
+
+export const SCOPE_LABEL: Record<ShortcutScope, string> = {
+  global: 'Anywhere',
+  timeline: 'Timeline',
+  preview: 'Preview',
+  media: 'Media',
+  dialog: 'Dialogs',
+};
+
+/**
+ * Rows that may repeat while the key is held. Everything else ignores
+ * `event.repeat`, so holding J does not escalate the shuttle to 8× and holding
+ * Delete does not eat the timeline.
+ */
+export const REPEATABLE_SHORTCUTS: ReadonlySet<ShortcutId> = new Set<ShortcutId>([
+  'nav.stepBack',
+  'nav.stepForward',
+  'nav.secondBack',
+  'nav.secondForward',
+  'view.zoomIn',
+  'view.zoomOut',
+]);
+
+/**
+ * PLAN §5's keyboard-guard contract, stated once. Every scaffold field sets
+ * `data-editor-text-input`; the first three cover any native control a slice
+ * introduces. This is the single line that stops "pressing S in a filename
+ * field splits the clip".
+ */
+export const TEXT_INPUT_SELECTOR =
+  'input, textarea, select, [contenteditable=""], [contenteditable="true"], [data-editor-text-input="true"]';
+
+/**
+ * The second half of the guard. A field owns its keystrokes; a *button* owns
+ * Space and Enter, because the browser dispatches its activation click from
+ * those keys and `preventDefault()` on the keydown silently suppresses it.
+ * Without this, Space on a focused IconButton toggles playback instead of
+ * pressing the button — PRODUCT.md makes keyboard operability a correctness
+ * requirement, and Space is the primary activation key on every button.
+ *
+ * Kept beside TEXT_INPUT_SELECTOR so both halves of the guard have one home.
+ */
+export const ACTIVATABLE_SELECTOR =
+  'button, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="switch"], [role="tab"], a[href], summary';
+
+/** The combos a focused activatable control claims for itself. */
+export const ACTIVATION_COMBOS: ReadonlySet<string> = new Set<string>(['Space', 'Enter']);
+
+/* ---------------------------------------------------------------- matching */
+
+export function shortcutPlatform(): Platform {
+  return getEditorAPI().platform;
+}
+
+const isAlpha = (s: string): boolean => s.length === 1 && s >= 'A' && s <= 'Z';
+
+/**
+ * Normalises a keydown into a registry combo, or null when the event carries no
+ * usable key (a bare modifier, a dead key, an IME candidate).
+ *
+ * Shift is only part of the combo for alphabetic and named keys. On a printable
+ * symbol the shift key is what *produced* the character — '?' is '?', not
+ * 'Shift+?' — which is why the help binding can be a plain '?'.
+ */
+export function comboFromEvent(
+  event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
+  platform: Platform,
+): string | null {
+  const raw = event.key;
+  if (!raw || raw === 'Dead' || raw === 'Unidentified') return null;
+  if (raw === 'Control' || raw === 'Shift' || raw === 'Alt' || raw === 'Meta') return null;
+
+  let base: string;
+  if (raw === ' ' || raw === 'Spacebar') base = 'Space';
+  else if (raw.length === 1) base = raw.toUpperCase();
+  else base = raw;
+
+  const accelerator = platform === 'darwin' ? event.metaKey : event.ctrlKey;
+  const named = base.length > 1;
+  const parts: string[] = [];
+  if (accelerator) parts.push('Ctrl');
+  if (event.shiftKey && (isAlpha(base) || named)) parts.push('Shift');
+  if (event.altKey) parts.push('Alt');
+  parts.push(base);
+  return parts.join('+');
+}
+
+/* ---------------------------------------------------------------- display */
+
+const DARWIN_MODIFIER: Record<string, string> = {
+  Ctrl: '⌘',
+  Shift: '⇧',
+  Alt: '⌥',
+};
+
+const KEY_GLYPH: Record<string, string> = {
+  ArrowLeft: '←',
+  ArrowRight: '→',
+  ArrowUp: '↑',
+  ArrowDown: '↓',
+  Delete: 'Del',
+  Escape: 'Esc',
+};
+
+/** Spoken names, so a hint reads sensibly when it is announced. */
+const KEY_SPOKEN: Record<string, string> = {
+  ArrowLeft: 'Left arrow',
+  ArrowRight: 'Right arrow',
+  ArrowUp: 'Up arrow',
+  ArrowDown: 'Down arrow',
+  Delete: 'Delete',
+  Escape: 'Escape',
+  Space: 'Space',
+};
+
+/** The platform-correct tokens for one combo, e.g. ['⌘', '⇧', 'Z'] on darwin. */
+export function comboTokens(combo: string, platform: Platform): string[] {
+  return combo.split('+').map((part) => {
+    if (part in DARWIN_MODIFIER) {
+      return platform === 'darwin' ? (DARWIN_MODIFIER[part] as string) : part;
+    }
+    return KEY_GLYPH[part] ?? part;
+  });
+}
+
+/** The same combo as words, for assistive technology. */
+export function comboSpoken(combo: string, platform: Platform): string {
+  return combo
+    .split('+')
+    .map((part) => {
+      if (part === 'Ctrl') return platform === 'darwin' ? 'Command' : 'Control';
+      if (part === 'Alt') return platform === 'darwin' ? 'Option' : 'Alt';
+      return KEY_SPOKEN[part] ?? part;
+    })
+    .join(' plus ');
+}

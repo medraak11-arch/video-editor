@@ -1,0 +1,639 @@
+/* ---------------------------------------------------------------------------
+   timeline.css — the signature region.
+
+   Planes (PLAN §7.0): the timeline region, the lanes and the ruler are
+   --surface-chrome; track heads and clips are --surface-raised. That 0.095
+   lightness step is the largest in the ramp and it is the only depth mechanism
+   here — nothing in this file casts a shadow, because nothing in it can move
+   off the plane.
+
+   No colour literal, no z-index literal, no literal duration.
+--------------------------------------------------------------------------- */
+
+.tl-root {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-chrome);
+  color: var(--text-ink);
+}
+
+/* ================================================================ toolbar === */
+
+.tl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  height: var(--timeline-toolbar-height);
+  min-height: var(--timeline-toolbar-height);
+  padding: 0 var(--space-sm);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.tl-toolbar-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 var(--space-xs);
+  background: var(--border-hairline-strong);
+}
+
+.tl-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.tl-toolbar-readout {
+  color: var(--text-muted);
+  padding-inline: var(--space-xs);
+  white-space: nowrap;
+}
+
+.tl-toolbar-count {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* =================================================================== grid === */
+
+.tl-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: var(--track-head-width) minmax(0, 1fr);
+  grid-template-rows: var(--ruler-height) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The dead corner above the track heads. Hairlines mark regions, not elevation. */
+.tl-corner {
+  grid-column: 1;
+  grid-row: 1;
+  background: var(--surface-chrome);
+  border-right: 1px solid var(--border-hairline-strong);
+  border-bottom: 1px solid var(--border-hairline-strong);
+}
+
+/* ================================================================== ruler === */
+
+/* `clip`, not `hidden`. All three viewports below hold content far larger than
+   their box, so `overflow: hidden` would make them real scroll containers and
+   the browser would scroll them natively to reveal a focused clip or a Tab-ed
+   track-head button. Nothing reads scrollLeft/scrollTop — scroll is a store
+   value written as ONE transform on the content element — so a native scroll
+   here desynchronises the lanes from the ruler permanently. `clip` removes the
+   scroll container, and `focus({ preventScroll: true })` is the second lock. */
+.tl-ruler {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  overflow: clip;
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--border-hairline-strong);
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: var(--z-timeline-ruler);
+}
+
+.tl-ruler-content {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  will-change: transform;
+}
+
+/* Minor ticks are a repeating gradient rather than hundreds of elements: exact
+   alignment with frame 0, and no DOM cost as the ruler is scrolled or zoomed. */
+.tl-ruler-ticks {
+  /* Locally scoped layout variable (PLAN §8.2): the ruler rewrites it inline
+     whenever the tick ladder steps. The value here is only a safe default. */
+  --tl-tick-step: 24px;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 6px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--border-hairline-strong) 0 1px,
+    transparent 1px var(--tl-tick-step)
+  );
+}
+
+.tl-ruler-major {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 10px;
+  background: var(--border-structural);
+}
+
+.tl-ruler-label {
+  position: absolute;
+  top: 2px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Markers are indicators, not controls: a mark in the ruler plus its label. */
+.tl-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-structural);
+  pointer-events: none;
+}
+
+.tl-marker-glyph {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-hair);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ============================================================ track heads === */
+
+/* See the note on .tl-ruler: `clip` so Tab-ing to a toggle on an off-screen
+   track head cannot scroll this column away from the lanes beside it. */
+.tl-heads {
+  grid-column: 1;
+  grid-row: 2;
+  position: relative;
+  overflow: clip;
+  background: var(--surface-chrome);
+  border-right: 1px solid var(--border-hairline-strong);
+  z-index: var(--z-track-heads);
+}
+
+.tl-heads-content {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  will-change: transform;
+}
+
+.tl-head {
+  position: absolute;
+  inset-inline: 0;
+  display: grid;
+  grid-template-rows: auto auto;
+  align-content: center;
+  justify-items: center;
+  row-gap: var(--space-hair);
+  padding-inline: var(--space-xs);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-structural);
+  transition: background var(--dur-feedback) var(--ease-out);
+}
+
+.tl-head[data-dense='true'] {
+  row-gap: 0;
+}
+
+.tl-head:hover {
+  background: var(--surface-raised-hover);
+}
+
+/* The one focus-ring exception (PLAN §5): clips and track heads focus INSET,
+   because a +2px ring bleeds into the abutting lane and is clipped by it. */
+.tl-head:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: -2px;
+  background: var(--surface-raised-hover);
+}
+
+/* Track identifiers are the ONLY uppercase strings in the UI (DESIGN.md §3).
+   Uppercase here is a NAME, not styling: the type step is left exactly as
+   `.type-label` defines it — no local tracking, no local line height. */
+.tl-head-label {
+  color: var(--text-ink);
+}
+
+.tl-head[data-locked='true'] .tl-head-label,
+.tl-head[data-hidden='true'] .tl-head-label {
+  color: var(--text-muted);
+}
+
+.tl-head-toggles {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+/* =================================================================== lanes === */
+
+/* See the note on .tl-ruler. This is the one that mattered most: focusing a
+   clip outside the viewport used to scroll this box natively. */
+.tl-lanes {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  overflow: clip;
+  background: var(--surface-chrome);
+  touch-action: none;
+}
+
+.tl-lane-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.tl-lane {
+  position: absolute;
+  inset-inline: 0;
+  border-bottom: 1px solid var(--border-structural);
+  z-index: var(--z-base);
+}
+
+/* =================================================================== clips === */
+
+/* NOT `overflow: hidden`. The tiny-clip hit target below is a pseudo-element
+   that must extend PAST the clip's box, and a clipped box would swallow it,
+   leaving a two-frame clip with a two-pixel pointer target. Nothing inside
+   overflows anyway: the body clips its own text and the strip clips its own
+   background, both below. */
+.tl-clip {
+  position: absolute;
+  top: var(--space-hair);
+  bottom: calc(var(--space-hair) + 1px);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background-color: var(--surface-raised);
+  border: 1px solid var(--border-structural);
+  border-radius: var(--radius-clip);
+  color: var(--text-ink);
+  cursor: grab;
+  z-index: var(--z-clip);
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    opacity var(--dur-feedback) var(--ease-out);
+}
+
+.tl-clip:hover {
+  background-color: var(--surface-raised-hover);
+}
+
+.tl-clip[data-selected='true'] {
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+}
+
+/* Focus REPLACES the selection outline, and lifts the background so a clip that
+   is both focused and selected still reads as two different states (PLAN §5). */
+.tl-clip:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: -2px;
+  background-color: var(--surface-raised-hover);
+}
+
+.tl-clip[data-offline='true'] {
+  border-color: var(--status-danger);
+}
+
+/* A clip narrower than CLIP_MIN_HIT_WIDTH keeps its true paint width and widens
+   only its pointer target, so a two-frame clip is still selectable. The overhang
+   is (CLIP_MIN_HIT_WIDTH - CLIP_MIN_RENDER_WIDTH) / 2 = 2px per side. It is the
+   .tl-clip element that receives the pointerdown, so the delegate on the lane
+   viewport resolves data-clip-id exactly as it does for a full-width clip. */
+.tl-clip[data-tiny='true']::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: -2px;
+  right: -2px;
+}
+
+.tl-clip[data-dragging='true'] {
+  cursor: grabbing;
+  z-index: var(--z-clip-dragging);
+}
+
+/* Illegality is carried by lightness first, then an icon, then a word (PLAN §3.4). */
+.tl-clip[data-refused='true'] {
+  opacity: 0.6;
+}
+
+/* A cancelled drag really does travel home, so it gets a transition. A committed
+   drag does not move at all — the clip is already at the frame it landed on. */
+.tl-clip[data-settling='true'] {
+  transition: transform var(--dur-feedback) var(--ease-out);
+}
+
+/* The magnetic settle, ~90ms. Under prefers-reduced-motion the token collapses
+   to 1ms AND the drag layer stops setting this attribute at all: snapping still
+   happens, it simply lands instantly. */
+.tl-clip[data-snapping='true'] {
+  transition:
+    transform var(--dur-snap) var(--ease-out),
+    left var(--dur-snap) var(--ease-out),
+    width var(--dur-snap) var(--ease-out);
+}
+
+/* The strip carries the clip's top corners itself, now that .tl-clip no longer
+   clips its children. Same radius token, so the two can never disagree. */
+.tl-clip-strip {
+  flex: 0 0 auto;
+  overflow: clip;
+  background-repeat: repeat-x;
+  background-size: auto 100%;
+  background-position: left center;
+  border-bottom: 1px solid var(--border-hairline);
+  border-start-start-radius: var(--radius-clip);
+  border-start-end-radius: var(--radius-clip);
+}
+
+.tl-clip-body {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-hair);
+  min-width: 0;
+  padding-inline: var(--space-xs);
+  overflow: hidden;
+}
+
+.tl-clip-icons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-hair);
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.tl-clip-icons [data-tone='danger'] {
+  color: var(--status-danger);
+}
+
+.tl-clip-icons [data-tone='warning'] {
+  color: var(--status-warning);
+}
+
+/* Truncated from the middle: head shrinks and ellipsises, tail always shows. */
+.tl-clip-name {
+  display: flex;
+  min-width: 0;
+  color: var(--text-ink);
+}
+
+.tl-clip-name-head {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-clip-name-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Trim handles. Transparent at rest; the cursor is the affordance until hover. */
+.tl-clip-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: var(--z-clip);
+}
+
+.tl-clip-edge[data-edge='in'] {
+  left: 0;
+}
+
+.tl-clip-edge[data-edge='out'] {
+  right: 0;
+}
+
+.tl-clip-edge::after {
+  content: '';
+  position: absolute;
+  inset-block: 2px;
+  width: 2px;
+  background: var(--text-ink);
+  opacity: 0;
+  transition: opacity var(--dur-feedback) var(--ease-out);
+}
+
+.tl-clip-edge[data-edge='in']::after {
+  left: 1px;
+}
+
+.tl-clip-edge[data-edge='out']::after {
+  right: 1px;
+}
+
+.tl-clip-edge:hover::after {
+  opacity: 1;
+}
+
+/* No :focus-visible rule here, deliberately. The handles are aria-hidden spans
+   with no tabindex — trimming by pointer is a direct-manipulation gesture, and
+   its keyboard equivalent is the inspector's numeric start/duration fields
+   (updateClipProperties), not a focusable handle. A focus style on an element
+   that can never take focus is a rule that lies about the seven-state table.
+   A dedicated keyboard trim binding is reported as an integration request. */
+
+/* =============================================================== playhead === */
+
+.tl-playhead-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1.5px;
+  margin-left: -0.75px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: var(--z-playhead);
+  will-change: transform;
+}
+
+.tl-playhead-head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 13px;
+  margin-left: -6.5px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  cursor: grab;
+  z-index: var(--z-playhead-head);
+  will-change: transform;
+}
+
+.tl-playhead-head::before {
+  content: '';
+  width: 11px;
+  height: 9px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+  transition:
+    width var(--dur-feedback) var(--ease-out),
+    height var(--dur-feedback) var(--ease-out);
+}
+
+.tl-playhead-head:hover::before,
+.tl-playhead-head:focus-visible::before {
+  width: 13px;
+  height: 11px;
+}
+
+.tl-playhead-head::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1.5px;
+  margin-left: -0.75px;
+  background: var(--accent);
+}
+
+.tl-playhead-head:active {
+  cursor: grabbing;
+}
+
+.tl-playhead-head:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-sm);
+}
+
+/* ================================================================ overlays === */
+
+/* The snap guide is time indication, not decoration — accent use 2 (PLAN §7.4). */
+.tl-snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: var(--z-snap-guide);
+  will-change: transform;
+}
+
+/* THE GESTURE-FEEDBACK PLANE — --z-marquee, shared, on purpose.
+   Six overlays sit here: the marquee, the two refusal marks, the drop line and
+   the two read-out badges. They are co-planar because a gesture is exclusive —
+   you cannot be marquee-selecting and dragging a clip and dropping media at the
+   same time, so no two of the marks are ever on screen together. The one pair
+   that CAN coexist is a refusal mark under a badge during a trim, and DOM order
+   in Timeline.tsx settles it: the bars are mounted before the badges, so a badge
+   always paints over a bar. A dedicated --z-drag-feedback token is reported as
+   an integration request; until scaffold owns one, this is stated rather than
+   silently assumed. */
+
+/* Explicitly NOT accent: a marquee is a transient gesture, not a selection. */
+.tl-marquee {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 1px solid var(--border-structural);
+  background: var(--scrim);
+  pointer-events: none;
+  z-index: var(--z-marquee);
+}
+
+.tl-refuse-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--status-danger);
+  pointer-events: none;
+  z-index: var(--z-marquee);
+}
+
+.tl-refuse-lane {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 2px;
+  background: var(--status-danger);
+  pointer-events: none;
+  z-index: var(--z-marquee);
+}
+
+.tl-drop-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--text-ink);
+  pointer-events: none;
+  z-index: var(--z-marquee);
+}
+
+/* Icon + word + colour, in that order. The badge never relies on hue alone. */
+.tl-drag-badge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  max-width: 260px;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--surface-raised);
+  border: 1px solid var(--status-danger);
+  border-radius: var(--radius-sm);
+  color: var(--text-ink);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: var(--z-marquee);
+  will-change: transform;
+}
+
+/* All three glyphs are mounted once; the badge's data-icon chooses which shows,
+   so naming a refusal costs no DOM allocation at pointer rate. */
+.tl-drag-badge-icon {
+  display: none;
+  color: var(--status-danger);
+}
+
+.tl-drag-badge[data-icon='alert'] .tl-drag-badge-icon[data-icon='alert'],
+.tl-drag-badge[data-icon='lock'] .tl-drag-badge-icon[data-icon='lock'],
+.tl-drag-badge[data-icon='unplug'] .tl-drag-badge-icon[data-icon='unplug'] {
+  display: flex;
+}
+
+.tl-trim-badge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: var(--space-hair) var(--space-xs);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-structural);
+  border-radius: var(--radius-sm);
+  color: var(--text-ink);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: var(--z-marquee);
+  will-change: transform;
+}
+
+/* The structure IS the affordance: one muted line, no graphic, no heading. */
+.tl-empty-hint {
+  position: absolute;
+  top: var(--space-lg);
+  left: var(--space-lg);
+  color: var(--text-muted);
+  pointer-events: none;
+  z-index: var(--z-base);
+}

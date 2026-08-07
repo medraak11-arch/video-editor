@@ -1,0 +1,123 @@
+/* ---------------------------------------------------------------------------
+   export.css — the export dialog's form, its progress state and its result.
+
+   The dialog body is --surface-panel, painted by the Dialog primitive. Every
+   control in it is a scaffold primitive — this file declares LAYOUT only, and
+   defines no control surface, no hover and no error styling. PLAN §5 owns those
+   once, on the primitive; the previous local field styles moved --surface-well
+   to --surface-panel-hover on hover, a step that exists nowhere in the
+   four-plane ramp, which is exactly the drift §5 exists to prevent.
+
+   The progress bar follows PLAN §7.7 to the letter: a 2px --border-structural
+   trough with a --text-ink fill, never --surface-well and never --accent, and
+   always accompanied by a stated percentage so the bar is not the only signal.
+--------------------------------------------------------------------------- */
+
+.ve-export-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding-bottom: var(--space-xs);
+}
+
+/* ================================================================== folder */
+
+/* The field grows, the browse button does not. flex-start so a refusal message
+   under the field pushes nothing sideways. */
+.ve-export-folder {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.ve-export-folder-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ================================================================ summary */
+
+.ve-export-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding-top: var(--space-lg);
+  border-top: 1px solid var(--border-hairline);
+}
+
+.ve-summary-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-md);
+}
+
+.ve-summary-label {
+  color: var(--text-muted);
+}
+
+.ve-summary-value {
+  color: var(--text-ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* =============================================================== progress */
+
+.ve-export-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-md) 0 var(--space-lg);
+}
+
+.ve-export-phase {
+  color: var(--text-ink);
+}
+
+.ve-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+}
+
+.ve-progress-track {
+  flex: 1 1 auto;
+  height: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--border-structural);
+  overflow: hidden;
+}
+
+.ve-progress-fill {
+  height: 100%;
+  background: var(--text-ink);
+}
+
+.ve-progress-value {
+  flex: 0 0 auto;
+  min-width: 40px;
+  text-align: right;
+  color: var(--text-ink);
+}
+
+.ve-export-frames {
+  color: var(--text-muted);
+}
+
+.ve-export-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--text-ink);
+  overflow-wrap: anywhere;
+}
+
+.ve-export-result-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--text-ink);
+}

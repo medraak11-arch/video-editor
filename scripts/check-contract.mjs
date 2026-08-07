@@ -50,14 +50,19 @@ for (const [, , theme, body] of blocks) {
   for (const m of body.matchAll(/(--[\w-]+)\s*:/g)) set.add(m[1]);
   byTheme.set(name, set);
 }
-const base = byTheme.get('signal');
-if (base) {
-  const colourish = [...base].filter((t) =>
-    /^--(surface|text|accent|status|border|scrim)/.test(t));
-  for (const [theme, set] of byTheme) {
-    if (theme === 'signal') continue;
-    for (const t of colourish)
-      if (!set.has(t)) fail(TOKENS, 0, 'theme-hole', `${theme} does not define ${t}`);
+// A token that appears in MORE THAN ONE theme block is theme-swapped and must
+// appear in ALL of them; one defined only in :root is theme-invariant by intent.
+// (Guessing by name prefix mis-flags --texture-* as --text-*.)
+{
+  const themeNames = [...byTheme.keys()];
+  const seenIn = new Map();
+  for (const [theme, set] of byTheme)
+    for (const t of set) seenIn.set(t, (seenIn.get(t) || []).concat(theme));
+  for (const [token, themes] of seenIn) {
+    if (themes.length === 1) continue;
+    for (const theme of themeNames)
+      if (!themes.includes(theme))
+        fail(TOKENS, 0, 'theme-hole', `${theme} does not define ${token} (defined in ${themes.join(', ')})`);
   }
 }
 
@@ -72,7 +77,8 @@ for (const f of files) {
 
   lines.forEach((line, i) => {
     const n = i + 1;
-    const code = line.replace(/\/\/.*$/, '');
+    // strip HTML numeric entities first: &#183; is a middle dot, not a colour
+    const code = line.replace(/\/\/.*$/, '').replace(/&#\w+;/g, '');
 
     // 1. colour literals outside tokens.css
     if (!isTokens(f)) {
