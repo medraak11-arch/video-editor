@@ -879,7 +879,8 @@ call wins and the rest are no-ops. There is no second place that sends a termina
 
 **`settle` must be reachable from a `finally` on every async path.** This is a hard rule, not a
 style preference. Every async listener and every async step in the preparing sequence puts its body
-in `try { … } catch (e) { settle(job, 'error', classifyFsError(e)); } finally { settle(job, 'error', ERR['encoder-failed']); }`.
+in `try { … } catch (e) { settle(job, 'error', classifyFsError(e, residual)); } finally { settle(job, 'error', residual); }`,
+where `residual` is `ERR['encoder-not-started']` before the spawn point and `ERR['encoder-failed']` after it (§4).
 The `finally` is a backstop that is a no-op whenever the body already settled, and the *only* thing
 standing between a thrown filesystem error and a job that never emits anything.
 
@@ -1022,7 +1023,7 @@ async function onClose(job: Job, code: number | null): Promise<void> {
     settle(job, 'done', { outputPath: job.finalPath });
   } catch (e) {
     await removeFile(job.partPath);
-    settle(job, 'error', classifyFsError(e));
+    settle(job, 'error', classifyFsError(e, ERR['encoder-failed']));
   } finally {
     settle(job, 'error', ERR['encoder-failed']);  // no-op if the body already settled
   }
@@ -1074,6 +1075,7 @@ trailing period, no apology, no exclamation mark, safe to show verbatim.
 |---|---|---|---|
 | `ffmpeg-missing` | `spawn` emits `error` with `errno.code === 'ENOENT'` | `ffmpeg was not found on PATH, so nothing can be encoded` | `false` |
 | `invalid-filename` | request validation (§5.2) rejects `filename` or the joined path | `That file name cannot be used on this system` | `false` |
+| `invalid-request` | request validation (§5.2) rejects any other field — missing, non-numeric, unknown enum, negative start frame, or a `document` present in the wrong shape | `The export settings are not valid, so nothing was encoded` | `false` |
 | `empty-timeline` | `buildExportGraph` returns `ok: false` because no clip contributes video or audio inside the range — or `req.document` is absent | `There is nothing on the timeline to export` | `false` |
 | `source-missing` | pre-flight `access(p, R_OK)` fails for a `graph.sourcePaths` entry, a clip's `mediaId` has no `ExportSource`, or stderr matches `/No such file or directory/` with a non-zero exit | `A source file is no longer where the project expects it` | `false` |
 | `unsupported-codec` | stderr matches `/Decoder .* not found\|Unknown decoder\|Unsupported codec\|Could not find codec parameters/` | `A source uses a codec this build cannot decode` | `false` |
@@ -1082,7 +1084,14 @@ trailing period, no apology, no exclamation mark, safe to show verbatim.
 | `disk-full` | `ENOSPC` from `classifyFsError` on any write in the finalize path, or stderr matches `/No space left on device/` | `The drive ran out of space before the export finished` | `false` |
 | `output-in-use` | `classifyFsError` sees `EPERM`/`EBUSY` — i.e. the **post-encode `rename`** threw (§3.4c), never the pre-flight folder `access` — or stderr matches `/Device or resource busy/` | `The output file is open in another program` | `true` |
 | `busy` | a job is already running for this sender | `Another export is already running` | `true` |
-| `encoder-failed` | non-zero exit that matched none of the above, or the `finally` backstop in §3.1 | `The encoder stopped before it finished` | `true` |
+| `encoder-not-started` | `spawn` throws or emits `error` with a code other than `ENOENT`, an unclassified throw in the preparing sequence, or the pre-spawn `finally` backstop in §3.1 | `The encoder could not be started, so nothing was encoded` | `true` |
+| `encoder-failed` | non-zero exit that matched none of the above, an unclassified throw in the finalize path, or the post-spawn `finally` backstop in §3.1 | `The encoder stopped before it finished` | `true` |
+
+**A message never names a cause that did not happen.** `encoder-failed` says the encoder stopped
+mid-run, so it may only be reported once a child process has actually run. Everything that fails
+before `spawn` — a malformed request, a launch that never happened — carries `invalid-request` or
+`encoder-not-started` instead. This is why `classifyFsError` takes its residual bucket as an
+argument: the same errno means different things either side of the spawn point.
 
 **Pre-flight beats post-mortem.** Every check that can be made before `spawn` is made before
 `spawn`, in the order §2.3 fixes: the request is well-formed and the filename is usable, the output
@@ -1121,6 +1130,7 @@ export const CH = {
 export type ExportErrorCode =
   | 'ffmpeg-missing'
   | 'invalid-filename'
+  | 'invalid-request'
   | 'empty-timeline'
   | 'source-missing'
   | 'unsupported-codec'
@@ -1129,6 +1139,7 @@ export type ExportErrorCode =
   | 'disk-full'
   | 'output-in-use'
   | 'busy'
+  | 'encoder-not-started'
   | 'encoder-failed';
 
 export interface ExportError {
@@ -1145,9 +1156,10 @@ export interface ExportError {
  * One source file. `path` is an ABSOLUTE filesystem path — never a 've-media://' URL,
  * which exists for Chromium (PLAN §1.4) and which ffmpeg cannot open.
  *
- * `hasAudio` is a property of the FILE, not of the edit: every dev-media fixture has an
- * audio stream even though its content is silence. Whether a clip is audible is decided
- * by `volume` and the track's `muted` flag (EXPORT §1.4), never by guessing from content.
+ * `hasAudio` is a property of the FILE, not of the edit: every dev-media fixture carries an
+ * audio stream, each with its own audible signature (scripts/make-dev-media.mjs). Whether a
+ * clip is audible is decided by `volume` and the track's `muted` flag (EXPORT §1.4), never by
+ * guessing from content — a file whose content were silence would still have `hasAudio: true`.
  */
 export interface ExportSource {
   mediaId: MediaId;

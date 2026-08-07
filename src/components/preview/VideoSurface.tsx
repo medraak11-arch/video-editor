@@ -34,6 +34,22 @@ const SEEK_EPSILON_SECONDS = 1 / 60;
 /** While playing forward the element owns the clock; only gross drift is corrected. */
 const DRIFT_TOLERANCE_SECONDS = 0.25;
 
+/**
+ * `MediaError.code`, spelled out. `el.error` is a bare number and the difference between
+ * these four is the difference between "this file is broken" and "try that again".
+ */
+const MEDIA_ERR_ABORTED = 1;
+const MEDIA_ERR_NETWORK = 2;
+const MEDIA_ERR_DECODE = 3;
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+/**
+ * How many times one source may fail transiently before we stop reloading it and say so.
+ * Counted per source URL and cleared on the next successful load, so a file that hiccups
+ * once an hour never accumulates its way into a verdict.
+ */
+const TRANSIENT_RELOAD_ATTEMPTS = 2;
+
 type SlotIndex = 0 | 1;
 
 interface Pool {
@@ -279,6 +295,10 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
 
   const handleLoadedMetadata = useCallback(
     (index: SlotIndex) => () => {
+      const src = elements.current[index]?.getAttribute('src');
+      // This source just loaded, so whatever failed before is spent. Forgetting it here is
+      // what keeps a once-an-hour hiccup from adding up to a permanent verdict.
+      if (src) reloadAttempts.current.delete(src);
       if (index === poolRef.current.active) syncTime(true);
       else parkIdle();
     },
@@ -286,32 +306,93 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
   );
 
   /**
-   * A source that probed fine but will not decode. Without this the user gets a black
-   * stage that is indistinguishable from a gap while the transport keeps running.
-   *
-   * It reports through the two channels that already exist — the media item goes to
-   * `status: 'error'`, which fires the media rail's Unplug + 'Offline' row treatment and
-   * the offline texture on every clip cut from it, plus one notice in the titlebar strip.
-   * No error surface is invented in the well (PLAN §8.14): the well stays the frame.
+   * Transient failures per source URL. A ref, not state: it must not render, and it must
+   * survive the re-render that a reload provokes.
    */
-  const handleDecodeError = useCallback(
+  const reloadAttempts = useRef(new Map<string, number>());
+
+  /**
+   * An `error` event on a pool element. What it means depends entirely on WHICH error and
+   * on WHICH element, and conflating the four codes is how a file that plays perfectly gets
+   * told it is undecodable.
+   *
+   * - `MEDIA_ERR_SRC_NOT_SUPPORTED` is the only real verdict: the browser looked at the
+   *   container or codec and cannot play it. That one condemns the media.
+   * - `MEDIA_ERR_DECODE` and `MEDIA_ERR_NETWORK` are transient. A decoder can drop a frame
+   *   under load and a local read can fail once. Reload the element and put it back where
+   *   the playhead is — the user should never have to go and find Retry for a file that is
+   *   fine. Only when reloading has failed TRANSIENT_RELOAD_ATTEMPTS times is there
+   *   something to report, and even then the report says what actually failed.
+   * - `MEDIA_ERR_ABORTED` is us. `removeAttribute('src') + load()` is the rename protocol's
+   *   own step 2 (RENAME.md §The file-lock problem); a file the user just renamed must not
+   *   come back marked offline because we let go of it on purpose.
+   *
+   * And the slot matters. The idle element is parked off screen holding the NEXT clip, and
+   * it is about to be re-pointed anyway. An error there is not what the user is looking at:
+   * it never touches media state, it just gets one quiet reload so the cut still lands on a
+   * decoded frame instead of black.
+   *
+   * A real verdict reports through the two channels that already exist — the media item goes
+   * to `status: 'error'`, which fires the media rail's Unplug + 'Offline' row treatment (icon
+   * and word, never colour alone) and the offline texture on every clip cut from it, plus one
+   * notice in the titlebar strip. No error surface is invented in the well (PLAN §8.14): the
+   * well stays the frame.
+   */
+  const handleMediaError = useCallback(
     (index: SlotIndex) => (): void => {
-      const src = elements.current[index]?.getAttribute('src');
-      if (!src) return;
+      const el = elements.current[index];
+      const src = el?.getAttribute('src');
+      if (!el || !src) return; // detached: there is no source, so nothing failed
+
+      const code = el.error?.code ?? MEDIA_ERR_DECODE;
+      if (code === MEDIA_ERR_ABORTED) return;
+
+      // Everything that is not the codec verdict is worth trying again — including a code
+      // this build has never seen. Retrying a file that turns out to be dead costs two
+      // reloads; condemning one that was fine costs the user their trust in the app.
+      const attempts = reloadAttempts.current.get(src) ?? 0;
+      const canReload =
+        code !== MEDIA_ERR_SRC_NOT_SUPPORTED && attempts < TRANSIENT_RELOAD_ATTEMPTS;
+
+      if (index !== poolRef.current.active) {
+        if (canReload) {
+          reloadAttempts.current.set(src, attempts + 1);
+          el.load();
+          parkIdle();
+        }
+        return; // a parked slot never condemns anything
+      }
+
+      if (canReload) {
+        reloadAttempts.current.set(src, attempts + 1);
+        el.load();
+        syncTime(true); // before metadata this sets the default playback start position
+        const s = readStore();
+        if (s.isPlaying && s.rate > 0) {
+          void el.play().catch(() => {
+            /* If it will not start, `error` fires again and the count above catches it. */
+          });
+        }
+        return;
+      }
 
       const s = readStore();
       const item = Object.values(s.items).find((candidate) => candidate.url === src);
       if (!item || item.status === 'error') return; // already reported; do not re-notice
 
-      const message = `${item.name} could not be decoded`;
-      s.updateItem(item.id, {
-        status: 'error',
-        error: { code: 'unsupported-codec', message },
-      });
+      // MEDIA_ERR_NETWORK survived the reloads: the bytes are not arriving. That is the file
+      // being gone or unreadable, not a codec the app does not speak — and saying "could not
+      // be decoded" would send the user looking for a transcode they do not need.
+      const [errorCode, message] =
+        code === MEDIA_ERR_NETWORK
+          ? (['not-found', `${item.name} could not be read from disk`] as const)
+          : (['unsupported-codec', `${item.name} could not be decoded`] as const);
+
+      s.updateItem(item.id, { status: 'error', error: { code: errorCode, message } });
       s.setNotice({ tone: 'danger', title: 'Cannot play clip', message });
       if (s.isPlaying) s.pause();
     },
-    [],
+    [parkIdle, syncTime],
   );
 
   /* -------------------------------------------- the fixture still timecode */
@@ -379,7 +460,7 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
             playsInline
             disablePictureInPicture
             onLoadedMetadata={handleLoadedMetadata(index)}
-            onError={handleDecodeError(index)}
+            onError={handleMediaError(index)}
           />
         ))}
 

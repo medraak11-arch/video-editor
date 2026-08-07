@@ -7,6 +7,10 @@
    - forward, playable source: the playhead is DERIVED from <video>.currentTime
      every frame. Nothing integrates wall-clock time here, which is what keeps an
      hour of playback accurate instead of accumulating a frame of drift a minute.
+     The one exception is an element whose clock has fallen behind the playhead by
+     more than ELEMENT_LAG_TOLERANCE_FRAMES — at a cut, mid-seek, or on a source
+     that will not seek. That element is not on this clip's source position, so the
+     wall clock carries the playhead until it arrives. Playback never stalls.
    - forward, not playable (MediaItem.url === '' — the browser fixture, or a gap
      between clips): integrate performance.now() deltas against an anchor that is
      reset on every external seek.
@@ -32,6 +36,18 @@ import { selectVideoClipIdAtFrame } from '../../state/timelineSlice';
  * @param activeVideoRef the pooled <video> currently on screen, or null when the
  *        playhead sits over a gap, over an unplayable source, or over nothing.
  */
+/**
+ * How far the element's clock may sit BEHIND the playhead and still be believed.
+ *
+ * Two frames is a decode hiccup reporting a stale `currentTime`, and clamping it to the
+ * playhead is the right answer. Anything larger is not jitter: it is an element that is
+ * not yet on this clip's source position — a seek that has not landed, a source that was
+ * just attached at a cut, a stream that refused to seek at all. Believing it would map a
+ * source time from the wrong place onto the timeline, and clamping it would freeze the
+ * playhead for exactly as long as the element takes to catch up. See `tick`.
+ */
+const ELEMENT_LAG_TOLERANCE_FRAMES = 2;
+
 export function usePlaybackClock(activeVideoRef: RefObject<HTMLVideoElement | null>): void {
   useEffect(() => {
     let raf = 0;
@@ -94,14 +110,40 @@ export function usePlaybackClock(activeVideoRef: RefObject<HTMLVideoElement | nu
 
       let next: number;
       const fromElement = forward ? frameFromElement(s) : null;
-      if (fromElement !== null) {
-        // A decode hiccup can report a stale currentTime; never let the playhead retreat
-        // during forward playback.
+
+      /*
+        `fromElement` is already TIMELINE time — `frameFromElement` inverted the
+        source-mapping invariant before returning. The guard below is therefore a
+        timeline-space comparison, and it is deliberately one-sided.
+
+        The element may not be believed when it is far BEHIND the playhead. It reports
+        where its own source clock is, and at a cut, mid-seek, or on a source that will
+        not seek, that is not where this clip's in-point is; the derived frame then lands
+        somewhere before the cut. `Math.max(fromElement, playhead)` would hold the playhead
+        still until the element's clock climbed past it, which is a stall exactly as long
+        as the incoming clip's source offset — and one the drift correction in
+        `VideoSurface.syncTime` cannot break, because that runs off playhead changes and
+        the playhead is the thing that has stopped. So: fall through to the wall clock,
+        which keeps time honestly until the element arrives, and pick the element back up
+        the moment it agrees with us again.
+
+        Ahead is a different case and is simply taken: an element cannot run backwards, so
+        a forward correction keeps the playhead monotonic and re-syncs picture to clock.
+      */
+      const trustElement =
+        fromElement !== null && fromElement >= s.playhead - ELEMENT_LAG_TOLERANCE_FRAMES;
+
+      if (trustElement) {
+        // Sub-frame jitter only: never let the playhead retreat during forward playback.
         next = Math.max(fromElement, s.playhead);
         anchor(next); // keep the wall clock in step, so a gap picks up seamlessly
       } else {
         const elapsedSeconds = (performance.now() - anchorMs) / 1000;
-        next = Math.round(anchorFrame + elapsedSeconds * s.fps * s.rate);
+        const integrated = Math.round(anchorFrame + elapsedSeconds * s.fps * s.rate);
+        // `anchorMs` is frozen while this branch runs, so `integrated` strictly grows:
+        // the playhead advances whatever the element is doing. Never below the playhead
+        // going forward, so the monotonic contract holds across the hand-off too.
+        next = forward ? Math.max(integrated, s.playhead) : integrated;
       }
 
       if (forward && next >= stopFrame) {

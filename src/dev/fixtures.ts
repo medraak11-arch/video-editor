@@ -568,6 +568,8 @@ export const fixtureAPI: EditorAPI = {
     open: () => Promise.resolve({ ok: false, error: noBridge('Opening a project') }),
     // A real folder string, so the export dialog's whole flow is reachable in a browser.
     pickDirectory: () => Promise.resolve(`C:\\Users\\editor\\Exports`),
+    // No OS hands a file to a browser tab. Present to keep the contract total.
+    onOpenRequest: () => () => undefined,
   },
 
   // `export` is deliberately absent: ExportDialog falls back to its local stub (PLAN §8.9).

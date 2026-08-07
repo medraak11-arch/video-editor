@@ -62,8 +62,9 @@ function referencedSources(s: StoreState, clips: readonly Clip[]): ExportSource[
       path: item.path,
       kind: item.kind,
       // A property of the FILE, not of the edit. Every dev-media fixture has an
-      // audio stream even though its content is silence; whether a clip is
-      // audible is decided by `volume` and the track's `muted` flag.
+      // audio stream, and since the fixture rework each one carries an audible
+      // signature; whether a clip is audible in the export is still decided by
+      // `volume` and the track's `muted` flag, never by the content.
       hasAudio: item.hasAudio,
       durationFrames: item.durationFrames,
       width: item.width,

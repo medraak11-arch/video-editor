@@ -18,10 +18,12 @@ export const CH = {
   mediaPick: 'media:pick',
   mediaProbe: 'media:probe',
   mediaRename: 'media:rename',
+  mediaReveal: 'media:reveal',
   mediaProbeProgress: 'media:probe-progress', // main -> renderer
   projectSave: 'project:save',
   projectOpen: 'project:open',
   projectPickDir: 'project:pick-directory',
+  projectOpenPath: 'project:open-path', // main -> renderer
   exportStart: 'export:start',
   exportCancel: 'export:cancel',
   exportProgress: 'export:progress', // main -> renderer
@@ -105,6 +107,7 @@ export interface ExportSettings {
 export type ExportErrorCode =
   | 'ffmpeg-missing'
   | 'invalid-filename'
+  | 'invalid-request'
   | 'empty-timeline'
   | 'source-missing'
   | 'unsupported-codec'
@@ -113,6 +116,7 @@ export type ExportErrorCode =
   | 'disk-full'
   | 'output-in-use'
   | 'busy'
+  | 'encoder-not-started'
   | 'encoder-failed';
 
 export interface ExportError {
@@ -129,9 +133,10 @@ export interface ExportError {
  * One source file. `path` is an ABSOLUTE filesystem path — never a 've-media://' URL,
  * which exists for Chromium (PLAN §1.4) and which ffmpeg cannot open.
  *
- * `hasAudio` is a property of the FILE, not of the edit: every dev-media fixture has an
- * audio stream even though its content is silence. Whether a clip is audible is decided
- * by `volume` and the track's `muted` flag (EXPORT §1.4), never by guessing from content.
+ * `hasAudio` is a property of the FILE, not of the edit: every dev-media fixture carries an
+ * audio stream, each with its own audible signature (scripts/make-dev-media.mjs). Whether a
+ * clip is audible is decided by `volume` and the track's `muted` flag (EXPORT §1.4), never by
+ * guessing from content — a file whose content were silence would still have `hasAudio: true`.
  */
 export interface ExportSource {
   mediaId: MediaId;
@@ -236,6 +241,16 @@ export interface EditorAPI {
      * illegal name onto the filesystem.
      */
     rename(path: string, baseName: string): Promise<RenameResult>;
+    /**
+     * Shows the file in the OS file manager, selected. Fire-and-forget: there is
+     * nothing useful to report back, and a missing file just opens its folder.
+     *
+     * OPTIONAL because it is a shell capability, and the browser preview has no
+     * shell. The media row's context menu detects it rather than assuming it, so
+     * `Reveal in folder` is live in Electron and disabled with a reason under
+     * `dev:web`.
+     */
+    reveal?(path: string): void;
     onProbeProgress(cb: (e: { path: string; progress: number }) => void): () => void;
     /**
      * Synchronous. Preload-only capability (webUtils.getPathForFile); null in the fixture
@@ -251,11 +266,22 @@ export interface EditorAPI {
     /**
      * With a `path`, opens that file directly and never raises the picker —
      * symmetric with `save`, whose `opts.path` already works that way. That is
-     * what 'open recent', a .veproj handed over by the OS, and any automated
-     * test of the open path all need. Omit it for the native picker.
+     * what 'open recent', a .veproj handed over by the OS (see
+     * `onOpenRequest`), and any automated test of the open path all need. Omit
+     * it for the native picker.
      */
     open(path?: string): Promise<OpenResult>;
     pickDirectory(): Promise<string | null>;
+    /**
+     * The OS handed the app a .veproj — a double-click on Windows/Linux (argv,
+     * including the argv of a second launch while this one is running) or the
+     * darwin `open-file` event. Main holds the path until the renderer has
+     * loaded, so a launch-time association is never dropped.
+     *
+     * The renderer decides what to do with it: only it can migrate and apply a
+     * project. Returns its own unsubscribe.
+     */
+    onOpenRequest(cb: (path: string) => void): () => void;
   };
   /**
    * PRESENT in Electron once electron/ipc/export.ts lands. Absent under dev:web,

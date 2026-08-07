@@ -44,6 +44,7 @@ import {
   Unplug,
   X,
 } from 'lucide-react';
+import type { EditorAPI } from '../../types/api';
 import type { MediaId } from '../../types/model';
 import type { MoveFailure } from '../../state/timelineSlice';
 import { useEditorStore, readStore } from '../../state/store';
@@ -79,28 +80,21 @@ function splitName(name: string): { head: string; tail: string } {
 
 /**
  * `Reveal in folder` needs `shell.showItemInFolder`, which lives in the main
- * process. `EditorAPI.media` declares no `reveal` member in this build, so the
- * capability is DETECTED rather than assumed: the item is in the menu because
- * RENAME.md puts it there, it runs the moment the bridge grows the member, and
- * until then it says plainly why it cannot. Nothing here reaches around
- * src/types/api.ts to invent an IPC channel — the declaration this needs is
- * stated in this slice's final note (PLAN §0.2).
+ * process. `EditorAPI.media.reveal` is OPTIONAL — Electron has it, the browser
+ * preview has no shell to reach — so the capability is DETECTED rather than
+ * assumed: under `dev:web` the item stays in the menu, disabled, and says why.
  */
-interface RevealCapableMedia {
-  reveal?(path: string): void | Promise<void>;
-}
-
 function revealCapability(): ((path: string) => void) | null {
-  let media: RevealCapableMedia;
+  let media: EditorAPI['media'];
   try {
-    media = getEditorAPI().media as RevealCapableMedia;
+    media = getEditorAPI().media;
   } catch {
     return null;
   }
   const reveal = media.reveal;
   if (typeof reveal !== 'function') return null;
   return (path: string) => {
-    void reveal.call(media, path);
+    reveal.call(media, path);
   };
 }
 
@@ -313,7 +307,7 @@ export const MediaItem = memo(function MediaItem({
       icon: <FolderOpen size={14} strokeWidth={1.75} />,
       disabled: reveal === null,
       disabledReason:
-        reveal === null ? 'Opening the folder is not available in this build' : undefined,
+        reveal === null ? 'Opening the folder is not available in the browser preview' : undefined,
       onSelect: () => reveal?.(item.path),
     },
     { kind: 'separator', id: 'sep' },

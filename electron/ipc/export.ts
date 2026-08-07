@@ -86,12 +86,17 @@ const removeFile = (p: string): Promise<void> =>
     () => undefined,
   );
 
-function classifyFsError(e: unknown): ExportError {
+/**
+ * `fallback` is the residual bucket, and it differs by WHERE the throw came
+ * from: a failure in the prepare sequence happened before ffmpeg ran at all, so
+ * it must not come back saying the encoder stopped.
+ */
+function classifyFsError(e: unknown, fallback: ExportError): ExportError {
   const code = (e as NodeJS.ErrnoException | null)?.code;
   if (code === 'EPERM' || code === 'EBUSY') return ERR['output-in-use'];
   if (code === 'EACCES') return ERR['permission-denied'];
   if (code === 'ENOSPC') return ERR['disk-full'];
-  return ERR['encoder-failed'];
+  return fallback;
 }
 
 /** §4, post-mortem. Pre-flight beats post-mortem; this is the residue. */
@@ -229,32 +234,40 @@ function filenameProblem(filename: unknown, folder: string, ext: string): boolea
   return false;
 }
 
+/**
+ * §5.2. Every rejection here is 'invalid-request': the request never reached a
+ * spawn, so an encoder message would name a cause that did not happen. The two
+ * exceptions below say something the user can act on and keep their own codes.
+ */
 function validateRequest(req: unknown): { ok: true; req: ExportRequest } | { ok: false; error: ExportError } {
-  if (typeof req !== 'object' || req === null) return { ok: false, error: ERR['encoder-failed'] };
+  if (typeof req !== 'object' || req === null) return { ok: false, error: ERR['invalid-request'] };
   const r = req as Partial<ExportRequest>;
 
   if (typeof r.folder !== 'string' || r.folder.trim() === '')
     return { ok: false, error: ERR['output-not-writable'] };
   if (!isPositiveInt(r.width) || !isPositiveInt(r.height))
-    return { ok: false, error: ERR['encoder-failed'] };
+    return { ok: false, error: ERR['invalid-request'] };
   if (typeof r.fps !== 'number' || !Number.isFinite(r.fps) || r.fps <= 0)
-    return { ok: false, error: ERR['encoder-failed'] };
+    return { ok: false, error: ERR['invalid-request'] };
   if (!CODECS.includes(r.codec as ExportRequest['codec']))
-    return { ok: false, error: ERR['encoder-failed'] };
+    return { ok: false, error: ERR['invalid-request'] };
   if (!QUALITIES.includes(r.quality as ExportRequest['quality']))
-    return { ok: false, error: ERR['encoder-failed'] };
+    return { ok: false, error: ERR['invalid-request'] };
   if (!RANGES.includes(r.range as ExportRequest['range']))
-    return { ok: false, error: ERR['encoder-failed'] };
+    return { ok: false, error: ERR['invalid-request'] };
   if (typeof r.startFrame !== 'number' || !Number.isInteger(r.startFrame) || r.startFrame < 0)
-    return { ok: false, error: ERR['encoder-failed'] };
+    return { ok: false, error: ERR['invalid-request'] };
   if (typeof r.durationFrames !== 'number' || !Number.isInteger(r.durationFrames))
-    return { ok: false, error: ERR['encoder-failed'] };
+    return { ok: false, error: ERR['invalid-request'] };
   if (r.durationFrames < 1) return { ok: false, error: ERR['empty-timeline'] };
 
   const ext = CONTAINER[r.codec as ExportRequest['codec']];
   if (filenameProblem(r.filename, r.folder, ext))
     return { ok: false, error: ERR['invalid-filename'] };
 
+  // An ABSENT document is 'empty-timeline' (§4) and is handled by the graph
+  // builder. A document that is present but the wrong shape is a malformed
+  // request, not an empty edit, and says so.
   const doc = r.document as ExportDocument | undefined;
   if (doc !== undefined) {
     if (
@@ -267,7 +280,7 @@ function validateRequest(req: unknown): { ok: true; req: ExportRequest } | { ok:
       !Array.isArray(doc.clips) ||
       !Array.isArray(doc.sources)
     ) {
-      return { ok: false, error: ERR['empty-timeline'] };
+      return { ok: false, error: ERR['invalid-request'] };
     }
   }
 
@@ -360,7 +373,8 @@ async function onClose(job: Job, code: number | null): Promise<void> {
   } catch (e) {
     console.error('[export] finalize failed', e);
     await removeFile(job.partPath);
-    settle(job, 'error', classifyFsError(e));
+    // Here the encoder DID run and exit 0; what failed is the move into place.
+    settle(job, 'error', classifyFsError(e, ERR['encoder-failed']));
   } finally {
     // No-op whenever the body already settled, and the only thing standing
     // between a thrown filesystem error and a job that never emits anything.
@@ -452,14 +466,18 @@ async function runJob(job: Job, rawReq: unknown): Promise<void> {
       job.child = spawn(ffmpegBinary(), built.graph.args, { windowsHide: true });
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      return settle(job, 'error', code === 'ENOENT' ? ERR['ffmpeg-missing'] : ERR['encoder-failed']);
+      return settle(
+        job,
+        'error',
+        code === 'ENOENT' ? ERR['ffmpeg-missing'] : ERR['encoder-not-started'],
+      );
     }
     job.state = 'running';
     const child = job.child;
 
     child.on('error', (e: NodeJS.ErrnoException) => {
       // Set synchronously: `error` precedes `close`, and onClose reads this.
-      job.spawnError = e.code === 'ENOENT' ? ERR['ffmpeg-missing'] : ERR['encoder-failed'];
+      job.spawnError = e.code === 'ENOENT' ? ERR['ffmpeg-missing'] : ERR['encoder-not-started'];
       console.error('[export] ffmpeg could not be started', e);
     });
     child.stdout?.on('data', makeProgressReader(job));
@@ -475,12 +493,13 @@ async function runJob(job: Job, rawReq: unknown): Promise<void> {
     emit(job, 'preparing', 1, 0);
   } catch (e) {
     console.error('[export] preparing failed', e);
-    settle(job, 'error', classifyFsError(e));
+    settle(job, 'error', classifyFsError(e, ERR['encoder-not-started']));
   } finally {
     // The §3.1 backstop, narrowed to the pre-spawn window: once a live child
     // exists the close handler is the single settle point, and settling here
-    // would orphan a running encoder writing to a hidden .part file.
-    if (job.child === null) settle(job, 'error', ERR['encoder-failed']);
+    // would orphan a running encoder writing to a hidden .part file. Nothing
+    // has been encoded on this branch, so it is not an encoder failure.
+    if (job.child === null) settle(job, 'error', ERR['encoder-not-started']);
   }
 }
 

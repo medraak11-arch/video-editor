@@ -1,10 +1,15 @@
 /* ---------------------------------------------------------------------------
    electron/ipc/media.ts — OWNER: media.
 
-   Three channels and nothing else (PLAN §8.12, RENAME.md §IPC contract):
-   CH.mediaPick, CH.mediaProbe and CH.mediaRename, plus the
+   Four channels and nothing else (PLAN §8.12, RENAME.md §IPC contract):
+   CH.mediaPick, CH.mediaProbe, CH.mediaRename and CH.mediaReveal, plus the
    CH.mediaProbeProgress emitter that reports a probe's stages back to the
    renderer.
+
+   CH.mediaReveal is the shell integration RENAME.md §UI already puts in the
+   media row's context menu. Without a main-process side the menu item was
+   permanently disabled — the renderer detects the capability and there was
+   nothing to detect.
 
    ffprobe / ffmpeg are resolved by electron/ffmpeg.ts — the bundled copy in a
    packaged build, PATH in development — and they are still NOT npm dependencies
@@ -24,7 +29,7 @@
      · no temp thumbnail is left behind on failure.
 --------------------------------------------------------------------------- */
 
-import { BrowserWindow, dialog } from 'electron';
+import { BrowserWindow, dialog, shell } from 'electron';
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -458,6 +463,22 @@ export function registerMediaIpc(ipcMain: IpcMain): void {
   ipcMain.removeHandler(CH.mediaPick);
   ipcMain.removeHandler(CH.mediaProbe);
   ipcMain.removeHandler(CH.mediaRename);
+  ipcMain.removeAllListeners(CH.mediaReveal);
+
+  // One-way, and the only channel here that is not an invoke: there is nothing
+  // to report back. A path that no longer exists opens its containing folder
+  // rather than doing nothing at all — an offline row is exactly the row whose
+  // folder you want to look at.
+  ipcMain.on(CH.mediaReveal, (_event, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath.trim() === '') return;
+    void access(filePath, FS_CONSTANTS.F_OK).then(
+      () => shell.showItemInFolder(filePath),
+      () => shell.openPath(path.dirname(filePath)).then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+  });
 
   ipcMain.handle(CH.mediaPick, async (event): Promise<string[]> => {
     try {

@@ -46,6 +46,15 @@ electronDist: node_modules/electron/dist
 npmRebuild: false
 buildDependenciesFromSource: false
 
+# Double-clicking a .veproj opens it. Without this entry the OS has no reason to
+# hand the file to this app at all, and main.ts's argv / 'open-file' handling
+# would only ever be reachable from a command line.
+fileAssociations:
+  - ext: veproj
+    name: Video Editor project
+    description: Video Editor project
+    role: Editor
+
 win:
   icon: build/icon.png
   target:

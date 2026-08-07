@@ -52,6 +52,7 @@ const api: EditorAPI = {
     probe: (path: string) => ipcRenderer.invoke(CH.mediaProbe, path) as Promise<ProbeResult>,
     rename: (path: string, baseName: string) =>
       ipcRenderer.invoke(CH.mediaRename, path, baseName) as Promise<RenameResult>,
+    reveal: (path: string) => ipcRenderer.send(CH.mediaReveal, path),
     onProbeProgress: (cb) =>
       subscribe<{ path: string; progress: number }>(CH.mediaProbeProgress, cb),
     /** Preload-only capability. There is no `(file as any).path` anywhere in this codebase. */
@@ -69,6 +70,13 @@ const api: EditorAPI = {
       ipcRenderer.invoke(CH.projectSave, project, opts ?? {}) as Promise<SaveResult>,
     open: (path) => ipcRenderer.invoke(CH.projectOpen, path ?? null) as Promise<OpenResult>,
     pickDirectory: () => ipcRenderer.invoke(CH.projectPickDir) as Promise<string | null>,
+    onOpenRequest: (cb) => {
+      const stop = subscribe<string>(CH.projectOpenPath, cb);
+      // Tells main a listener exists. A .veproj the OS handed over at launch is
+      // held until this ping, so it cannot arrive before the renderer subscribes.
+      ipcRenderer.send(CH.projectOpenPath);
+      return stop;
+    },
   },
 
   // Adding this member is what flips `getEditorAPI().export ?? exportStub` to the

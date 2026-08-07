@@ -37,6 +37,17 @@ export const ERR: Readonly<Record<ExportErrorCode, ExportError>> = Object.freeze
     message: 'That file name cannot be used on this system',
     retryable: false,
   },
+  /**
+   * The request itself is malformed — a missing or non-numeric field, an
+   * unknown codec, a negative start frame. ffmpeg is never launched, so this
+   * must NOT arrive as 'encoder-failed': that sentence sends whoever reads it
+   * looking for a broken encoder that was never started.
+   */
+  'invalid-request': {
+    code: 'invalid-request',
+    message: 'The export settings are not valid, so nothing was encoded',
+    retryable: false,
+  },
   'empty-timeline': {
     code: 'empty-timeline',
     message: 'There is nothing on the timeline to export',
@@ -75,6 +86,17 @@ export const ERR: Readonly<Record<ExportErrorCode, ExportError>> = Object.freeze
   busy: {
     code: 'busy',
     message: 'Another export is already running',
+    retryable: true,
+  },
+  /**
+   * ffmpeg was found but the run never began: `spawn` threw or emitted `error`
+   * with something other than ENOENT, or preparation failed before the spawn
+   * point. Distinct from 'encoder-failed' for the same reason as above — one
+   * says the encoder died mid-run, this one says it never ran.
+   */
+  'encoder-not-started': {
+    code: 'encoder-not-started',
+    message: 'The encoder could not be started, so nothing was encoded',
     retryable: true,
   },
   'encoder-failed': {

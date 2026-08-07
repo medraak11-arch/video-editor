@@ -26,10 +26,12 @@ import { FileDropTarget } from './components/media/FileDropTarget';
 import { ExportDialog } from './components/export/ExportDialog';
 import { ShortcutOverlay } from './keyboard/ShortcutOverlay';
 import { useShortcuts } from './keyboard/useShortcuts';
+import { useOpenHandoff } from './keyboard/useOpenHandoff';
 
 export function App(): ReactElement {
   useShortcuts();
   useUiPersistence();
+  useOpenHandoff();
 
   return (
     <ThemeProvider>

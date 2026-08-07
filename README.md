@@ -17,10 +17,13 @@ sign in to. The chrome stays dark and quiet so the frame is the only lit thing o
 - Preview with real transport: play/pause, J-K-L shuttle, frame stepping, in and out points.
 - Per-clip transform (scale, position, rotation, opacity), speed and volume in the inspector.
 - Rename a source file on disk, from the media rail's context menu or the inspector's `Name`
-  field. The extension is preserved; every clip cut from the file follows the new name.
+  field. The extension is preserved, and every clip cut from the file keeps playing from it — clips
+  reference media by id, so nothing goes offline. A clip's own label on the timeline is a separate,
+  display-only name and is left alone, so one gesture only ever does one thing.
 - Export to H.264, H.265 or ProRes at a chosen size, rate and quality, over the whole timeline or
   the in–out range. One ffmpeg process, real progress, working cancel.
-- Projects save as `.veproj` — plain JSON you can read, diff and keep in version control.
+- Projects save as `.veproj` — plain JSON you can read, diff and keep in version control. An
+  installed build owns the extension, so double-clicking one opens it in the running window.
 - Three themes — `signal`, `instrument`, `daylight` — from the `…` menu in the title bar. Every
   palette is contrast-verified and none of them encodes state in hue alone.
 
@@ -138,6 +141,12 @@ Produces, in `dist-release/`:
 The target is Windows x64. Configuration is in [`electron-builder.yml`](electron-builder.yml), and
 every non-default setting there carries its reason.
 
+The installer claims the `.veproj` extension, which is the only way the OS ever hands a project to
+the app. `npm start` and `npm run dev` do not register anything, so from a checkout the same path is
+reached by passing the file on the command line: `npm start -- "path/to/project.veproj"`. Either
+way a second launch does not open a second window — the single-instance lock hands the path to the
+window already open.
+
 Two things happen before the packager runs. `npm run icon` redraws `build/icon.png` from the
 palette in `src/styles/tokens.css`, so the app mark cannot drift from the theme. `npm run
 stage:ffmpeg` copies ffmpeg and ffprobe into `build/ffmpeg/` — see below.
@@ -198,7 +207,8 @@ These are design decisions and honest gaps, not bugs.
 - **No transitions, titles, effects or colour correction.** A cut is a cut.
 - **Nothing autosaves.** `Ctrl+S` is the only thing that writes a project, and closing the window
   does not stop to ask about unsaved changes. The dot beside the project name in the title bar is
-  the only warning you get.
+  the only warning you get. Opening another project replaces the one in the window on the same
+  terms, whether it arrives by `Ctrl+O` or by double-clicking a `.veproj`.
 - **One export at a time per window.** Starting a second reports that one is already running rather
   than queueing it.
 - **Renaming a file is not undoable.** `Ctrl+Z` is a stack of timeline snapshots and a disk rename
