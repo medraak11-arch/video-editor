@@ -15,12 +15,21 @@
 
 /* ============================================================== titlebar === */
 
+/* THE MAJOR-REGION BOUNDARIES — titlebar/body, rail/preview, preview/timeline,
+   preview/inspector. All four carried an alpha hairline, which measures
+   1.64 / 1.63 / 1.52:1 over chrome and 1.01:1 over the daylight well: the
+   chrome->panel plane step is only 1.12:1, so with an invisible rule the whole
+   first screen read as one undifferentiated sheet — the "muddy Electron chrome"
+   anti-reference arriving through the back door. --border-structural is the
+   solid token already verified >=3:1 against chrome, panel, raised and well in
+   all three themes (measured 3.07-5.09), and PLAN §7.5 names it as the carrier
+   for anything at the 3:1 floor. */
 .shell-titlebar {
   position: relative;
   z-index: var(--z-titlebar);
   flex: 0 0 auto;
   background: var(--surface-chrome);
-  border-bottom: 1px solid var(--border-hairline);
+  border-bottom: 1px solid var(--border-structural);
 }
 
 .shell-titlebar-bar {
@@ -106,7 +115,7 @@
   min-height: 0;
   overflow: hidden;
   padding: var(--space-sm);
-  border-right: 1px solid var(--border-hairline-strong);
+  border-right: 1px solid var(--border-structural);
 }
 
 .shell-rail > * {
@@ -150,7 +159,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border-top: 1px solid var(--border-hairline-strong);
+  border-top: 1px solid var(--border-structural);
 }
 
 .shell-timeline > * {
@@ -172,7 +181,7 @@
   width: var(--inspector-width);
   min-height: 0;
   padding: var(--space-sm);
-  border-left: 1px solid var(--border-hairline-strong);
+  border-left: 1px solid var(--border-structural);
   background: var(--surface-chrome);
   animation: shell-inspector-in var(--dur-panel) var(--ease-out) both;
 }

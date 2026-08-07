@@ -64,6 +64,9 @@ export function Timeline(): ReactElement {
   const playheadLine = useRef<HTMLDivElement>(null);
   const playheadHead = useRef<HTMLDivElement>(null);
 
+  const overflowRail = useRef<HTMLDivElement>(null);
+  const overflowThumb = useRef<HTMLDivElement>(null);
+
   const snapGuide = useRef<HTMLDivElement>(null);
   const marquee = useRef<HTMLDivElement>(null);
   const refuseBar = useRef<HTMLDivElement>(null);
@@ -98,6 +101,32 @@ export function Timeline(): ReactElement {
 
   usePlayheadSync(playheadLine, playheadHead);
 
+  /**
+   * The vertical overflow cue. Written imperatively from the same places the
+   * scroll transform is written, so a scroll still re-renders nothing. It is an
+   * indicator only — the lanes are scrolled by wheel and by the store, never by
+   * dragging this.
+   */
+  const syncOverflow = useCallback((): void => {
+    const rail = overflowRail.current;
+    const thumb = overflowThumb.current;
+    const viewport = laneViewport.current;
+    if (!rail || !thumb || !viewport) return;
+
+    const view = viewport.clientHeight;
+    const content = laneContent.current?.offsetHeight ?? 0;
+    if (view <= 0 || content <= view) {
+      rail.hidden = true;
+      return;
+    }
+    rail.hidden = false;
+    const height = Math.max(24, Math.round((view * view) / content));
+    const travel = view - height;
+    const progress = Math.min(1, Math.max(0, readStore().scrollY / (content - view)));
+    thumb.style.height = `${height}px`;
+    thumb.style.transform = `translate3d(0, ${Math.round(progress * travel)}px, 0)`;
+  }, []);
+
   /* The lane viewport width feeds the ruler's tick band and zoom-to-fit. */
   useLayoutEffect(() => {
     const element = laneViewport.current;
@@ -106,10 +135,14 @@ export function Timeline(): ReactElement {
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) setViewportWidth(Math.round(entry.contentRect.width));
+      syncOverflow();
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [syncOverflow]);
+
+  /* Adding, removing or resizing a track changes the extent without a scroll. */
+  useLayoutEffect(syncOverflow, [syncOverflow, laneHeight]);
 
   /* The single scroll write. Three elements, one callback, no re-render. */
   useEffect(() => {
@@ -124,6 +157,7 @@ export function Timeline(): ReactElement {
       if (rulerContent.current) {
         rulerContent.current.style.transform = `translate3d(${-s.scrollX}px, 0, 0)`;
       }
+      syncOverflow();
     };
     write();
     const unsubX = useEditorStore.subscribe((s) => s.scrollX, write);
@@ -132,7 +166,7 @@ export function Timeline(): ReactElement {
       unsubX();
       unsubY();
     };
-  }, []);
+  }, [syncOverflow]);
 
   /* Lane tops are summed from Track.height — the one runtime source (PLAN §2.4). */
   const rows: { id: string; top: number }[] = [];
@@ -252,6 +286,10 @@ export function Timeline(): ReactElement {
           ) : null}
 
           <Playhead ref={playheadLine} />
+
+          <div className="tl-lanes-overflow" ref={overflowRail} hidden aria-hidden="true">
+            <div className="tl-lanes-overflow-thumb" ref={overflowThumb} />
+          </div>
 
           <div className="tl-snap-guide" ref={snapGuide} hidden aria-hidden="true" />
           <div className="tl-marquee" ref={marquee} hidden aria-hidden="true" />

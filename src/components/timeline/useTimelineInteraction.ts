@@ -12,6 +12,15 @@
    commits to the store exactly once — on pointerup, inside `flushSync` so the
    authoritative geometry has landed before the drag transforms are cleared.
 
+   THE CAPTURE RULE: every gesture is driven by listeners bound to `window`, so
+   pointer capture is an optimisation and never a precondition. `capturePointer`
+   swallows the NotFoundError the spec mandates for an unknown pointer id, and
+   the capture is taken only AFTER the gesture record exists — a press must
+   still select, still drag and still commit when capture is unavailable. Two
+   real cases depend on this: a pointer lost mid-drag (the id stops existing, so
+   the release throws too), and any harness that dispatches PointerEvents
+   directly, which is what makes this layer testable without stubbing the DOM.
+
    THE REFUSAL CONTRACT (PLAN §3.4): an illegal placement is never silently
    snapped back. The ghost stops at the last legal frame, dims to 60 %, names
    the reason with an icon and a word, and marks the blocking edge. Legality is
@@ -698,8 +707,7 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
 
       clearDragDecorations(g, !commit);
 
-      const viewport = refs.laneViewport.current;
-      if (viewport?.hasPointerCapture(g.pointerId)) viewport.releasePointerCapture(g.pointerId);
+      releasePointer(refs.laneViewport.current, g.pointerId);
 
       if (g.kind === 'scrub' && commit && !reducedRef.current) startMomentum(g);
     },
@@ -718,6 +726,18 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
       const prevX = g.lastClientX;
       g.lastClientX = event.clientX;
       g.lastClientY = event.clientY;
+
+      // A release that happens outside the window never reaches us, and without
+      // a capture nothing cancels the gesture either — the press would stay open
+      // for ever, holding an uncommitted history transaction and a clip stuck
+      // under the cursor. A move reporting no buttons IS that lost release, so
+      // the gesture ends where the pointer actually is.
+      if (event.buttons === 0) {
+        const underway = g.kind === 'move' || g.kind === 'trim' ? g.moved : true;
+        if (underway) applyGesture(g);
+        endGesture(true);
+        return;
+      }
 
       if (g.kind === 'move' && !g.moved) {
         const far =
@@ -847,7 +867,6 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
         startScrollY: s.scrollY,
         historyOpen: false,
       };
-      viewport.setPointerCapture(event.pointerId);
 
       /* --- trim ---------------------------------------------------------- */
       if (edgeEl && clipEl) {
@@ -870,6 +889,7 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
           moved: false,
           frame: edge === 'in' ? clip.start : clipEnd(clip),
         };
+        capturePointer(viewport, event.pointerId);
         return;
       }
 
@@ -925,6 +945,7 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
           deltaTrack: 0,
           snapTarget: null,
         };
+        capturePointer(viewport, event.pointerId);
         return;
       }
 
@@ -942,6 +963,7 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
         baseSelection: mode === 'extend' ? [...s.selection] : [],
         lastKey: '',
       };
+      capturePointer(viewport, event.pointerId);
     },
     [focusClip, refs.laneContent, refs.laneViewport, stopMomentum],
   );
@@ -970,7 +992,7 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
         lastTime: performance.now(),
       };
       gesture.current = g;
-      viewport.setPointerCapture(event.pointerId);
+      capturePointer(viewport, event.pointerId);
       // Scrubbing puts the keyboard in the timeline's scope, so S and M work
       // straight afterwards. Scope is focus containment, never hover (PLAN §8.10).
       // Pressing the playhead marker focuses the marker itself — it is a
@@ -1266,6 +1288,34 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
 
 function speedFor(overshoot: number): number {
   return Math.min(AUTOSCROLL_MAX_PX, Math.max(2, overshoot * 0.4));
+}
+
+/**
+ * Take pointer capture if the browser will give it, and carry on if it will not.
+ *
+ * `setPointerCapture` throws `NotFoundError` whenever the id is not a pointer
+ * the element could capture — a pointer already lifted or cancelled, an id
+ * synthesised by a test harness, a pointer captured elsewhere. Every gesture
+ * here is driven by `window` listeners, so losing the capture costs nothing;
+ * letting the throw escape cost the entire press, because the call sat above
+ * the branches that build the gesture.
+ */
+function capturePointer(el: Element, pointerId: number): void {
+  try {
+    el.setPointerCapture(pointerId);
+  } catch {
+    /* Window listeners already cover the gesture. */
+  }
+}
+
+/** The mirror of `capturePointer`: releasing a capture we never took must not throw. */
+function releasePointer(el: Element | null, pointerId: number): void {
+  if (!el) return;
+  try {
+    if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+  } catch {
+    /* Nothing was captured. */
+  }
 }
 
 /**

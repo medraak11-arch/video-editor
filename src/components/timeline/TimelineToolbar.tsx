@@ -34,18 +34,10 @@ export function TimelineToolbar({ laneViewportRef }: TimelineToolbarProps): Reac
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
   const selectionCount = useEditorStore(selectSelectionCount);
 
+  // `splitAtPlayhead` raises its own refusal notice, so the button and the `S`
+  // shortcut cannot explain themselves differently (PLAN §5, §3.4).
   const onSplit = useCallback(() => {
-    const s = readStore();
-    const before = Object.keys(s.clips).length;
-    s.splitAtPlayhead();
-    // Enabled and explains on use, rather than disabled and silent (PLAN §5).
-    if (Object.keys(readStore().clips).length === before) {
-      s.setNotice({
-        tone: 'warning',
-        title: 'Nothing to split',
-        message: 'Park the playhead over a clip first',
-      });
-    }
+    readStore().splitAtPlayhead();
   }, []);
 
   const onMarker = useCallback(() => {

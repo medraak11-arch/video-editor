@@ -22,7 +22,7 @@
 import { useEffect } from 'react';
 import { readStore } from '../state/store';
 import { selectOverlayOpen } from '../state/uiSlice';
-import { selectTimelineDurationFrames } from '../state/timelineSlice';
+import { selectDeletableClipIds, selectTimelineDurationFrames } from '../state/timelineSlice';
 import { secondStepFrames } from '../lib/time';
 import { TRACK_HEAD_WIDTH, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from '../lib/constants';
 import { openProject, saveProject } from './projectActions';
@@ -55,6 +55,44 @@ function laneViewportWidth(): number {
 
 const clampZoom = (zoom: number): number => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
 
+/**
+ * A destructive edit unmounts the clip that has focus, and React drops focus to
+ * `<body>` when it does: `activeScope()` then reads null and every timeline- and
+ * media-scoped row goes dead until the user clicks something. The unmount is a
+ * later task, so there is nothing to recover *after* the dispatch — the fix is to
+ * move focus off the doomed node BEFORE the store mutates, exactly as
+ * `MediaRail.handleRemove` hands focus to the neighbouring row.
+ *
+ * The neighbour is the nearest clip in DOM order that the edit is not about to
+ * remove; failing that it is the lane viewport, which is `tabIndex={-1}` inside
+ * `data-shortcut-scope="timeline"` and therefore keeps the scope alive even when
+ * the timeline empties. `preventScroll` because `.tl-lanes` scroll is store-owned
+ * (PLAN §8.6).
+ */
+function handOffFocusBeforeDelete(): void {
+  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+    '[data-clip-id]',
+  );
+  if (!focused) return; // focus is not on a clip: nothing is about to vanish under it
+
+  // What the edit will really remove — a selection a track lock protects is
+  // refused, and moving focus off a clip that is going to stay is a wart.
+  const doomed = new Set(selectDeletableClipIds(readStore()));
+  if (!doomed.has(focused.dataset.clipId ?? '')) return;
+
+  const clips = [...document.querySelectorAll<HTMLElement>('[data-clip-id]')];
+  const at = clips.indexOf(focused);
+  const survives = (el: HTMLElement): boolean => !doomed.has(el.dataset.clipId ?? '');
+
+  let next: HTMLElement | undefined;
+  for (let i = at + 1; i < clips.length && !next; i += 1) if (survives(clips[i])) next = clips[i];
+  for (let i = at - 1; i >= 0 && !next; i -= 1) if (survives(clips[i])) next = clips[i];
+
+  (next ?? document.querySelector<HTMLElement>('[data-lane-viewport]'))?.focus({
+    preventScroll: true,
+  });
+}
+
 /** One entry per `ShortcutHandlerName`. The registry cannot name a handler that is missing. */
 const HANDLERS: Record<ShortcutHandlerName, () => void> = {
   togglePlay: () => readStore().togglePlay(),
@@ -83,8 +121,14 @@ const HANDLERS: Record<ShortcutHandlerName, () => void> = {
   },
 
   splitAtPlayhead: () => readStore().splitAtPlayhead(),
-  lift: () => readStore().deleteSelection(),
-  rippleDelete: () => readStore().rippleDelete(),
+  lift: () => {
+    handOffFocusBeforeDelete();
+    readStore().deleteSelection();
+  },
+  rippleDelete: () => {
+    handOffFocusBeforeDelete();
+    readStore().rippleDelete();
+  },
   addMarker: () => {
     readStore().addMarker();
   },

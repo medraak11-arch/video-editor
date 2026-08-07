@@ -29,12 +29,45 @@ import {
 const CLIP_MIN_ICON_WIDTH = 16;
 const STRIP_MAX_HEIGHT = 14;
 const STRIP_MIN_LANE_HEIGHT = 30;
-const TAIL_CHARS = 7;
 
-/** Split for middle truncation, so both head and tail stay readable. */
-function splitName(name: string): { head: string; tail: string } {
-  if (name.length <= TAIL_CHARS + 2) return { head: name, tail: '' };
-  return { head: name.slice(0, name.length - TAIL_CHARS), tail: name.slice(-TAIL_CHARS) };
+/* ---------------------------------------------------------- name truncation
+
+   Middle truncation used to be two flex children — an ellipsising head and an
+   unshrinkable tail. Under pressure the head collapsed to 0 px first and the
+   clip rendered its tail alone: `Market, wide` became `t, wide`, and two clips
+   on the same track could render the identical label. The head is the
+   identifying part, so it is now reserved first and the string is cut here, in
+   one text node, against the width the body actually has.
+
+   The budget is analytic rather than measured: a per-clip DOM measurement would
+   have to run on every zoom step for forty clips. The per-character figure is
+   deliberately a shade wider than the 11 px label face measures (~5.5 px
+   average), so the computed string under-fills its box; `.tl-clip-name` still
+   carries `text-overflow: ellipsis` as the backstop for a name of unusually
+   wide glyphs or a fallback font.                                            */
+
+/** Average advance of one character at the 11 px label step, px. */
+const LABEL_CHAR_PX = 6;
+/** The ellipsis is roughly two characters wide, so it is reserved separately. */
+const ELLIPSIS_PX = 10;
+/** Clip chrome the name never gets: 1 px border + var(--space-xs) padding, both sides. */
+const NAME_CHROME_PX = 10;
+/** One 14 px state icon plus the var(--space-hair) gap that follows it. */
+const ICON_SLOT_PX = 16;
+/** Head characters held back before any tail is shown. Below this: head only. */
+const MIN_HEAD_CHARS = 4;
+/** A one- or two-character tail says nothing, so it is dropped rather than shown. */
+const MIN_TAIL_CHARS = 3;
+const MAX_TAIL_CHARS = 7;
+
+/** The name as it fits in `textPx`, truncated from the middle. '' = no room at all. */
+export function fitClipName(name: string, textPx: number): string {
+  if (name.length * LABEL_CHAR_PX <= textPx) return name;
+  const budget = Math.floor((textPx - ELLIPSIS_PX) / LABEL_CHAR_PX);
+  if (budget < 1) return '';
+  const tail = Math.min(MAX_TAIL_CHARS, budget - MIN_HEAD_CHARS);
+  if (tail < MIN_TAIL_CHARS) return `${name.slice(0, budget)}…`;
+  return `${name.slice(0, budget - tail)}…${name.slice(name.length - tail)}`;
 }
 
 export interface ClipProps {
@@ -77,7 +110,6 @@ export const Clip = memo(function Clip({
 
   const paintWidth = Math.max(CLIP_MIN_RENDER_WIDTH, framesToPx(clip.duration, zoom));
   const tiny = paintWidth < CLIP_MIN_HIT_WIDTH;
-  const showName = paintWidth >= CLIP_MIN_LABEL_WIDTH;
   const showIcons = paintWidth >= CLIP_MIN_ICON_WIDTH;
   const stripHeight = Math.min(STRIP_MAX_HEIGHT, Math.round(laneHeight * 0.4));
   // DESIGN.md §5: below 24px the NAME drops and the strip remains. It occupies
@@ -103,7 +135,17 @@ export const Clip = memo(function Clip({
 
   const showStateIcons =
     showIcons && (offline || warned || trackLocked || trackMuted || trackHidden);
-  const { head, tail } = splitName(clip.name);
+  // Two slots at most: one source-state glyph, one track-state glyph.
+  const iconSlots = showStateIcons
+    ? (offline || warned ? 1 : 0) + (trackLocked || trackMuted || trackHidden ? 1 : 0)
+    : 0;
+  // CLIP_MIN_LABEL_WIDTH gates on the clip's paint width; the icons then take a
+  // further 16 px each out of the body, which is what used to leave 38-50 px clips
+  // rendering a 0 px head. Both gates apply.
+  const name =
+    paintWidth >= CLIP_MIN_LABEL_WIDTH
+      ? fitClipName(clip.name, paintWidth - NAME_CHROME_PX - iconSlots * ICON_SLOT_PX)
+      : '';
   const duration = framesToDuration(clip.duration, fps);
 
   const states: string[] = [];
@@ -135,7 +177,7 @@ export const Clip = memo(function Clip({
         />
       ) : null}
 
-      {showName || showStateIcons ? (
+      {name !== '' || showStateIcons ? (
         <div className="tl-clip-body">
           {showStateIcons ? (
             <span className="tl-clip-icons" aria-hidden="true">
@@ -156,11 +198,8 @@ export const Clip = memo(function Clip({
               ) : null}
             </span>
           ) : null}
-          {showName ? (
-            <span className="tl-clip-name type-label">
-              <span className="tl-clip-name-head">{head}</span>
-              <span className="tl-clip-name-tail">{tail}</span>
-            </span>
+          {name !== '' ? (
+            <span className="tl-clip-name type-label">{name}</span>
           ) : null}
         </div>
       ) : null}

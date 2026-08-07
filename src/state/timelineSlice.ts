@@ -626,17 +626,37 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const s = get();
       const at = s.playhead;
       const targets: Clip[] = [];
+      let blockedByLock = false;
 
       const consider = (clip: Clip | undefined): void => {
         if (!clip) return;
-        if (s.tracks[clip.trackId]?.locked) return;
-        if (at > clip.start && at < clipEnd(clip)) targets.push(clip);
+        if (at <= clip.start || at >= clipEnd(clip)) return;
+        if (s.tracks[clip.trackId]?.locked) {
+          blockedByLock = true;
+          return;
+        }
+        targets.push(clip);
       };
 
       if (s.selection.size > 0) for (const id of s.selection) consider(s.clips[id]);
       else for (const clip of Object.values(s.clips)) consider(clip);
 
-      if (targets.length === 0) return;
+      // The refusal is raised HERE, not at a call site: the toolbar button and the
+      // `S` shortcut are the same registry row, and a check that lives in only one
+      // of them makes the control explain itself on click and stay silent on the
+      // key (PLAN §5, and §3.4's "never silent").
+      if (targets.length === 0) {
+        get().setNotice(
+          blockedByLock
+            ? { tone: 'warning', title: 'Could not split', message: 'Track is locked' }
+            : {
+                tone: 'warning',
+                title: 'Nothing to split',
+                message: 'Park the playhead over a clip first',
+              },
+        );
+        return;
+      }
 
       pushHistory();
       const next: Clip[] = [];
@@ -660,15 +680,27 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
 
       set({ ...withClips(docOf(get()), next), selection });
       get().markDirty();
+      // A split mints a new clip id, so the offline projection no longer covers
+      // the clip set — same reason deleteSelection and rippleDelete recompute.
+      get().recomputeOfflineClips();
     },
 
     deleteSelection: () => {
       const s = get();
-      const ids = [...s.selection].filter((id) => {
-        const clip = s.clips[id];
-        return clip !== undefined && !s.tracks[clip.trackId]?.locked;
-      });
-      if (ids.length === 0) return;
+      const ids = selectDeletableClipIds(s);
+      if (ids.length === 0) {
+        // Every id in `selection` exists in `clips` (§3.4), so a non-empty
+        // selection that yields nothing to remove was refused by a track lock,
+        // and a refusal is never silent.
+        if (s.selection.size > 0) {
+          get().setNotice({
+            tone: 'warning',
+            title: 'Could not delete',
+            message: 'Track is locked',
+          });
+        }
+        return;
+      }
 
       pushHistory();
       const doc = withClips(docOf(get()), [], ids);
@@ -679,12 +711,17 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
 
     rippleDelete: () => {
       const s = get();
-      const removing: Clip[] = [];
-      for (const id of s.selection) {
-        const clip = s.clips[id];
-        if (clip && !s.tracks[clip.trackId]?.locked) removing.push(clip);
+      const removing = selectDeletableClipIds(s).map((id) => s.clips[id]);
+      if (removing.length === 0) {
+        if (s.selection.size > 0) {
+          get().setNotice({
+            tone: 'warning',
+            title: 'Could not delete',
+            message: 'Track is locked',
+          });
+        }
+        return;
       }
-      if (removing.length === 0) return;
 
       pushHistory();
 
@@ -1126,6 +1163,21 @@ export const selectTimelineDurationFrames = (s: StoreState): Frames => {
 /** [stable] Returns s.clipsByTrack[t] BY REFERENCE. This is the lane renderer's subscription. */
 export const selectClipIdsInTrack = (s: StoreState, t: TrackId): readonly ClipId[] =>
   s.clipsByTrack[t] ?? NO_CLIPS;
+
+/**
+ * [UNSTABLE REFERENCE] readStore() only. The clips a delete would actually remove:
+ * the selection minus anything a track lock protects. `deleteSelection`,
+ * `rippleDelete` and the keyboard layer's focus hand-off all ask this same
+ * question, so there is one answer rather than three copies of the lock rule.
+ */
+export const selectDeletableClipIds = (s: StoreState): ClipId[] => {
+  const out: ClipId[] = [];
+  for (const id of s.selection) {
+    const clip = s.clips[id];
+    if (clip && !s.tracks[clip.trackId]?.locked) out.push(id);
+  }
+  return out;
+};
 
 /** [stable] */
 export const selectIsSelected = (s: StoreState, id: ClipId): boolean => s.selection.has(id);

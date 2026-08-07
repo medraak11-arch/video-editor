@@ -54,6 +54,7 @@ export function PanelGroup(): ReactElement {
   const inspectorVisible = useEditorStore(selectInspectorVisible);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   /** Last measured height of the grid — the denominator for timelineHeightPct. */
   const gridHeight = useRef(0);
   /**
@@ -113,6 +114,27 @@ export function PanelGroup(): ReactElement {
     document.querySelector<HTMLElement>('[data-rail-toggle]')?.focus();
   }, [railCollapsed]);
 
+  /**
+   * The same failure one region over: the inspector is mounted on
+   * `selectInspectorVisible`, so Escape (`edit.clearSelection`, global scope) with
+   * focus on an inspector control unmounts the control and drops focus on <body>,
+   * killing every region-scoped shortcut. Hand it to the stage, which is
+   * `tabIndex={-1}` inside `data-shortcut-scope="preview"`.
+   *
+   * Guarded on the FLIP rather than on the current value: the inspector is absent
+   * at boot, and an unconditional effect would steal focus onto the stage on first
+   * paint and put the app in the preview scope before the user has touched it.
+   */
+  const inspectorWasVisible = useRef(inspectorVisible);
+  useLayoutEffect(() => {
+    const dismissed = inspectorWasVisible.current && !inspectorVisible;
+    inspectorWasVisible.current = inspectorVisible;
+    if (!dismissed) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    stageRef.current?.focus({ preventScroll: true });
+  }, [inspectorVisible]);
+
   const gridStyle = {
     '--rail-w': railCollapsed ? '0px' : `${railWidth}px`,
     '--rail-gutter': railCollapsed ? '0px' : 'var(--resizer-hit)',
@@ -141,7 +163,7 @@ export function PanelGroup(): ReactElement {
         </>
       )}
 
-      <div className="shell-stage" data-shortcut-scope="preview" tabIndex={-1}>
+      <div className="shell-stage" data-shortcut-scope="preview" tabIndex={-1} ref={stageRef}>
         <PreviewWell />
         {inspectorVisible ? (
           <aside className="shell-inspector" aria-label="Inspector">

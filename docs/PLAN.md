@@ -2048,8 +2048,17 @@ accessibility requirement without noticing.
   heading, gutters, the separator inside a `Menu`. Measured at 2.3:1 over `--surface-chrome`; it
   **cannot** reach 3:1 against any plane in this ramp and is **explicitly exempt**, because it never
   carries meaning that PRODUCT.md names. It is forbidden on anything in the list below.
-- **`--border-hairline-strong`** — boundary between major regions (rail ↔ preview, preview ↔
-  timeline), and the underline on a `surface='well'` field. 3.65:1 over chrome, 3.36:1 over panel.
+- **`--border-hairline-strong`** — the underline on a `surface='well'` field, and dividers *inside*
+  a region. Measured over the rendered tokens it is **1.64 / 1.63 / 1.52:1 over chrome**,
+  **1.67 / 1.67 / 1.53:1 over panel** and **1.46 / 1.46 / 1.01:1 over well** (signal / instrument /
+  daylight). The "3.65:1 over chrome, 3.36:1 over panel" figures printed here previously were wrong
+  by roughly 2.2×; an alpha wash at 0.16 (0.18 in daylight) cannot reach 3:1 against any plane in
+  this ramp, for the same reason `--border-hairline` cannot. **It is therefore no longer the carrier
+  for a major-region boundary.** The boundaries between major regions — titlebar ↔ body, rail ↔
+  preview, preview ↔ inspector, preview ↔ timeline — carry `--border-structural`, because the
+  chrome → panel plane step is only 1.12 / 1.10 / 1.09:1 and an invisible rule on top of it leaves
+  the first screen reading as one undifferentiated sheet. In `daylight` it is worse than invisible:
+  hairline-strong over `--surface-well` measures 1.01:1, so the preview region had no edge at all.
 - **`--border-structural`** — a **solid** token, not an alpha wash, verified ≥3:1 against `chrome`,
   `panel` **and** `raised` in all three themes (§7.1 table). This is the only border permitted on
   anything PRODUCT.md names at the 3:1 floor.
@@ -2064,12 +2073,21 @@ preamble). Therefore, normatively:
 |---|---|
 | Clip edges | 1 px `--border-structural` **border** (not outline — see the three-layer table in §5) on every clip |
 | Track lane boundaries | 1 px `--border-structural` bottom rule per lane |
+| Major-region boundaries (titlebar ↔ body, rail ↔ preview, preview ↔ inspector, preview ↔ timeline) | 1 px `--border-structural` |
 | Focus rings | `--accent`, already ≥4.3:1 on every plane in every theme |
 | Control borders (`InlineNotice`, error state, marquee, resizer-on-hover) | `--border-structural`, or the status colour where §7.6 specifies one |
 
-`--border-structural` on `--surface-raised` measures 3.02 / 3.10 / 3.30:1 — the signal theme sits
-0.02 above the floor. That is the one marginal pairing in the system; it is measured, deliberate,
-and must be re-verified if any of those three values ever changes.
+`--border-structural` measures 4.09 / 4.18 / 3.64:1 on `--surface-chrome`, 3.66 / 3.80 / 3.96:1 on
+`--surface-panel`, 3.07 / 3.16 / 3.31:1 on `--surface-raised` and 4.79 / 4.80 / 5.09:1 on
+`--surface-well`. `raised` is the marginal one — the signal theme sits 0.07 above the floor. It is
+measured, deliberate, and must be re-verified if any of those values ever changes.
+
+**Known, accepted: the plane ramp is not monotonic in `daylight`.** `panel` is `oklch(1 0 0)`, so
+`raised` (0.94) is necessarily *darker* than the plane it sits above — §7.1 already states this
+("it inverts the ramp"), and there is no headroom above pure white to fix it. Depth in `daylight` is
+therefore read from the boundary rules and from the near-black well, not from "lighter = closer".
+Nothing here may be "corrected" by moving a palette value: `--surface-panel-hover` is pinned 0.03
+clear of `--surface-raised` (§7.1) and widening the chrome → panel step collapses that clearance.
 
 ### 7.6 Status, textures, and clip state encoding
 

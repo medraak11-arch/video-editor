@@ -244,7 +244,10 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--surface-well);
-  color: var(--text-ink);
+  /* The inset IS a well surface (PLAN §7.0), so it takes on-well text, not ink.
+     In daylight ink is dark and lands at 1.26:1 here — the exact case
+     --text-on-well was split out to cover (DESIGN.md §2). */
+  color: var(--text-on-well);
   font-family: var(--font-mono);
   font-size: var(--type-numeric-size);
   font-weight: var(--type-numeric-weight);
@@ -279,7 +282,7 @@
 }
 
 .ve-field-input:hover:not([data-disabled='true']) {
-  background: var(--surface-panel-hover);
+  background: var(--surface-well-hover);
 }
 
 .ve-field[data-surface='well'] .ve-field-input:hover:not([data-disabled='true']) {
@@ -293,11 +296,11 @@
 }
 
 .ve-field-input[data-mixed='true'] {
-  color: var(--text-muted);
+  color: var(--text-on-well-muted);
 }
 
 .ve-field-input[data-disabled='true'] {
-  color: var(--text-muted);
+  color: var(--text-on-well-muted);
   cursor: not-allowed;
 }
 
@@ -320,7 +323,7 @@
 }
 
 .ve-field-input-text::placeholder {
-  color: var(--text-muted);
+  color: var(--text-on-well-muted);
 }
 
 /* A read-only field is not a disabled field: it keeps its contrast and stays

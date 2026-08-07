@@ -128,9 +128,15 @@
   background: var(--border-structural);
 }
 
+/* The 28px ruler is TWO bands and the two label sets never share a y-range:
+   timecode marks in the upper ~14px, marker labels in the lower (see
+   .tl-marker-glyph). They both used to sit at the top and physically overlapped
+   — "Music swells" was drawn across both 0:30 and 0:40 — which is structural,
+   not data-dependent: any marker label longer than a few characters collides
+   with a nearby tick at any zoom. */
 .tl-ruler-label {
   position: absolute;
-  top: 2px;
+  top: 1px;
   color: var(--text-muted);
   white-space: nowrap;
   pointer-events: none;
@@ -146,13 +152,17 @@
   pointer-events: none;
 }
 
+/* The lower band. It also holds the tick ladder, so the glyph paints its own
+   chrome ground rather than sitting transparently over the ticks. */
 .tl-marker-glyph {
   position: absolute;
-  top: 1px;
+  top: 14px;
   left: 1px;
   display: flex;
   align-items: center;
   gap: var(--space-hair);
+  padding-right: var(--space-hair);
+  background: var(--surface-chrome);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -220,6 +230,19 @@
   color: var(--text-muted);
 }
 
+/* Both head states above land on --surface-raised-hover, where --text-muted
+   measures 4.55 / 4.38 / 4.45:1 — at or under the floor, and forbidden outright
+   by PLAN §7.1. The resting ghost toggles inside the head are muted for the same
+   reason and are the usual target of that hover, so they lift too; a pressed
+   toggle already carries its own colour (ink, or the accent on the three that
+   opt in) and is left alone. media.css:84 does exactly this for media rows. */
+.tl-head:hover .tl-head-label,
+.tl-head:focus-visible .tl-head-label,
+.tl-head:hover .ve-iconbtn:not([aria-pressed='true']),
+.tl-head:focus-visible .ve-iconbtn:not([aria-pressed='true']) {
+  color: var(--text-ink);
+}
+
 .tl-head-toggles {
   display: flex;
   align-items: center;
@@ -253,6 +276,34 @@
   z-index: var(--z-base);
 }
 
+/* THE OVERFLOW CUE. `.tl-lanes` is `overflow: clip` and its scroll is a store
+   value written as one transform, so there is no native scrollbar to inherit —
+   at MIN_WINDOW the default 0.38 timeline leaves A1-A3 entirely below the fold
+   with nothing on screen saying they exist. This is an INDICATOR, not a control:
+   pointer-events off, no tab stop, no seven-state table, hidden outright when
+   every lane fits. It shares --z-marquee with the gesture marks below because it
+   is the same topmost plane inside the viewport; it cannot collide with them, as
+   it occupies a 4px strip at the right edge that no gesture mark reaches. */
+.tl-lanes-overflow {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  pointer-events: none;
+  z-index: var(--z-marquee);
+}
+
+.tl-lanes-overflow-thumb {
+  position: absolute;
+  top: 0;
+  right: 1px;
+  width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--border-structural);
+  will-change: transform;
+}
+
 /* =================================================================== clips === */
 
 /* NOT `overflow: hidden`. The tiny-clip hit target below is a pseudo-element
@@ -282,7 +333,17 @@
   background-color: var(--surface-raised-hover);
 }
 
+/* Selection carried on THREE channels, in the order PRODUCT.md requires: a
+   lightness lift, then a border-weight change, then hue. The accent outline
+   alone failed the colour-blind clause outright — an amber ring sits directly
+   against the clip's own orange thumbnail strip in `signal`, and a cyan one
+   against V1's teal strips in `instrument`, so a deuteranope had no signal at
+   all. Hover takes the lightness lift too, which is why the border weight is
+   here: hovered and selected must not converge. Footprint is unchanged —
+   .tl-clip is border-box and the outline is inset. */
 .tl-clip[data-selected='true'] {
+  background-color: var(--surface-raised-hover);
+  border-width: 2px;
   outline: 1.5px solid var(--accent);
   outline-offset: -1.5px;
 }
@@ -369,6 +430,15 @@
   color: var(--text-muted);
 }
 
+/* --text-muted is forbidden on any -hover surface (PLAN §7.1), and all three of
+   these states put the clip on --surface-raised-hover. Same lift media.css:84
+   applies to its rows. The two status tones below keep their own colour. */
+.tl-clip:hover .tl-clip-icons,
+.tl-clip:focus-visible .tl-clip-icons,
+.tl-clip[data-selected='true'] .tl-clip-icons {
+  color: var(--text-ink);
+}
+
 .tl-clip-icons [data-tone='danger'] {
   color: var(--status-danger);
 }
@@ -377,23 +447,16 @@
   color: var(--status-warning);
 }
 
-/* Truncated from the middle: head shrinks and ellipsises, tail always shows. */
+/* Truncated from the middle in Clip.tsx, against the width the body actually
+   has. The ellipsis here is the backstop for a wide-glyph name, not the
+   mechanism — a CSS-only split collapsed the head to 0 px and left the clip
+   showing its tail alone. */
 .tl-clip-name {
-  display: flex;
   min-width: 0;
-  color: var(--text-ink);
-}
-
-.tl-clip-name-head {
-  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.tl-clip-name-tail {
-  flex: 0 0 auto;
-  white-space: nowrap;
+  color: var(--text-ink);
 }
 
 /* Trim handles. Transparent at rest; the cursor is the affordance until hover. */
@@ -598,6 +661,17 @@
   white-space: nowrap;
   z-index: var(--z-marquee);
   will-change: transform;
+}
+
+/* The badge is the ONE overlay here that needs a display value of its own, and
+   that value beats the UA sheet's `[hidden] { display: none }` on specificity —
+   so `el.hidden = true` laid the badge out anyway and a refused drag left a
+   "Track is locked" chip on the lane for the rest of the session, still exposed
+   as role="status". Every other overlay is `position: absolute` with no display
+   of its own, which is why only this one drifted. Restate the attribute here so
+   the two cannot disagree. */
+.tl-drag-badge[hidden] {
+  display: none;
 }
 
 /* All three glyphs are mounted once; the badge's data-icon chooses which shows,

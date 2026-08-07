@@ -506,12 +506,27 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
       get().markDirty();
     },
 
-    updateItem: (id, patch) =>
+    /**
+     * `offlineClipIds` is a projection of MEDIA state, and `status` is the field it
+     * projects — so a status write maintains it here rather than at each call site.
+     * `VideoSurface.handleDecodeError` moved an item to `error` through this action
+     * and every clip cut from that media stayed looking healthy, because the two
+     * probe paths remembered to pair the write with `markClipsOffline` and the
+     * decode path did not. `markClipsOffline` never pushes history, never marks
+     * dirty and only ever adds, so it is idempotent beside the explicit calls that
+     * already exist and it cannot clear the flag early on a re-probe — the
+     * recompute after a SUCCESSFUL probe is what does that.
+     */
+    updateItem: (id, patch) => {
+      let wentOffline = false;
       set((s) => {
         const prev = s.items[id];
         if (!prev) return {};
+        if (patch.status === 'error' && prev.status !== 'error') wentOffline = true;
         return { items: { ...s.items, [id]: { ...prev, ...patch } } };
-      }),
+      });
+      if (wentOffline) get().markClipsOffline(id);
+    },
 
     removeItem: (id) => {
       const item = get().items[id];
