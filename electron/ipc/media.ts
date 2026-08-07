@@ -5,10 +5,11 @@
    plus the CH.mediaProbeProgress emitter that reports a probe's stages back to
    the renderer.
 
-   ffprobe / ffmpeg resolve on PATH — they are NOT dependencies (PLAN §1.2),
-   which is what makes MediaErrorCode 'ffmpeg-missing' a reachable, meaningful
-   state rather than dead code. A missing binary is a real error state on the
-   affected row, never a silent failure.
+   ffprobe / ffmpeg are resolved by electron/ffmpeg.ts — the bundled copy in a
+   packaged build, PATH in development — and they are still NOT npm dependencies
+   (PLAN §1.2), which is what keeps MediaErrorCode 'ffmpeg-missing' a reachable,
+   meaningful state rather than dead code. A missing binary is a real error state
+   on the affected row, never a silent failure.
 
    Invocations are pinned by PLAN §4.3:
      ffprobe -v error -print_format json -show_streams -show_format -- <abs>
@@ -33,6 +34,7 @@ import path from 'node:path';
 import { CH } from '../../src/types/api';
 import type { ProbeData, ProbeResult } from '../../src/types/api';
 import type { MediaError, MediaKind } from '../../src/types/model';
+import { ffmpegCommand } from '../ffmpeg';
 
 /* ----------------------------------------------------------------- shared */
 
@@ -72,7 +74,10 @@ type RunOutcome =
   | { status: 'missing' }
   | { status: 'failed'; message: string };
 
-/** Runs a binary from PATH. Never rejects; a missing binary is a distinct outcome. */
+/**
+ * Runs a resolved binary (electron/ffmpeg.ts decides bundled vs PATH). Never
+ * rejects; a missing binary is a distinct outcome.
+ */
 function run(bin: string, args: string[], timeoutMs: number): Promise<RunOutcome> {
   return new Promise((resolve) => {
     let settled = false;
@@ -183,7 +188,7 @@ async function extractThumbnail(abs: string, durationSeconds: number): Promise<s
 
   const at = Math.min(1, durationSeconds / 2);
   const outcome = await run(
-    'ffmpeg',
+    ffmpegCommand('ffmpeg'),
     ['-v', 'error', '-ss', String(at), '-i', abs, '-frames:v', '1', '-vf', 'scale=320:-2', '-y', target],
     20000,
   );
@@ -215,13 +220,15 @@ async function probeFile(event: IpcMainInvokeEvent, abs: string): Promise<ProbeR
   sendProgress(event, abs, 0.1);
 
   const outcome = await run(
-    'ffprobe',
+    ffmpegCommand('ffprobe'),
     ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', '--', abs],
     30000,
   );
 
   if (outcome.status === 'missing') {
-    return fail('ffmpeg-missing', 'ffprobe was not found on PATH, so media cannot be read');
+    // Not "…on PATH": a packaged build looks in its own resources first, so the
+    // sentence has to be true whichever lookup came up empty (electron/ffmpeg.ts).
+    return fail('ffmpeg-missing', 'ffprobe could not be found, so media cannot be read');
   }
   if (outcome.status === 'failed') {
     return fail('probe-failed', 'ffprobe did not finish reading this file');

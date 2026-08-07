@@ -14,6 +14,8 @@ import { app, BrowserWindow, ipcMain, net, protocol, shell } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CH } from '../src/types/api';
+import { describeFfmpegResolution } from './ffmpeg';
+import { registerExportIpc } from './ipc/export';
 import { registerMediaIpc } from './ipc/media';
 import { registerProjectIpc } from './ipc/project';
 
@@ -152,9 +154,14 @@ if (!gotLock) {
       }
     });
 
+    // The one startup line worth having. A packaged build has no terminal, so
+    // when someone reports "it cannot read my files" this is where the answer is.
+    console.log(`[ffmpeg] ${describeFfmpegResolution()}`);
+
     registerWindowIpc();
     registerMediaIpc(ipcMain);
     registerProjectIpc(ipcMain);
+    registerExportIpc(ipcMain);
 
     mainWindow = createWindow();
 

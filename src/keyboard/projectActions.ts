@@ -11,7 +11,12 @@
 --------------------------------------------------------------------------- */
 
 import { getEditorAPI } from '../lib/editorApi';
-import { applyProject, migrateProject, serializeProject } from '../lib/project';
+import {
+  applyProject,
+  describeProjectProblem,
+  migrateProject,
+  serializeProject,
+} from '../lib/project';
 import { readStore } from '../state/store';
 
 /** Basename without the .veproj extension. The renderer has no node `path`. */
@@ -32,7 +37,8 @@ export async function saveProject(opts?: { saveAs?: boolean }): Promise<void> {
   saveInFlight = true;
   try {
     const before = readStore();
-    const result = await getEditorAPI().project.save(serializeProject(before), {
+    const api = getEditorAPI();
+    const result = await api.project.save(serializeProject(before), {
       path: before.projectPath,
       saveAs: opts?.saveAs === true,
     });
@@ -46,10 +52,34 @@ export async function saveProject(opts?: { saveAs?: boolean }): Promise<void> {
     }
 
     store.setProjectPath(result.path);
-    store.setProjectName(projectNameFromPath(result.path));
+
+    // The project takes the name of the file it lives in — that is the only way
+    // to name a project in this build. The catch is that the path is not known
+    // until the dialog returns, so the bytes already on disk still carry the OLD
+    // name: leaving it there means the titlebar reads one name, the file another,
+    // and reopening silently renames the project back. So when the name changes,
+    // write once more. The path is pinned by now, so this second write is
+    // dialog-free — and it only happens on a first save or a save-as, never on
+    // the Ctrl+S the user presses forty times an hour.
+    const adopted = projectNameFromPath(result.path);
+    if (store.projectName !== adopted) {
+      store.setProjectName(adopted);
+      const rewrite = await api.project.save(serializeProject(readStore()), { path: result.path });
+      if (!rewrite.ok) {
+        readStore().setNotice({
+          tone: 'danger',
+          title: 'Save failed',
+          message: rewrite.error.message,
+        });
+        // Deliberately still dirty: the file on disk does not match the editor.
+        return;
+      }
+    }
+
     // Last, because setProjectName is on the markDirty list (PLAN §3.1).
-    store.markSaved();
-    store.setNotice(null);
+    const after = readStore();
+    after.markSaved();
+    after.setNotice(null);
   } finally {
     saveInFlight = false;
   }
@@ -61,11 +91,11 @@ export async function saveProject(opts?: { saveAs?: boolean }): Promise<void> {
  * (PLAN §2.6), so a JSON file that is not one lands as 'bad-format' here
  * rather than hydrating the store with rubbish.
  */
-export async function openProject(): Promise<void> {
+export async function openProject(path?: string): Promise<void> {
   if (openInFlight) return;
   openInFlight = true;
   try {
-    const result = await getEditorAPI().project.open();
+    const result = await getEditorAPI().project.open(path);
     const store = readStore();
 
     if (!result.ok) {
@@ -81,10 +111,12 @@ export async function openProject(): Promise<void> {
 
     const project = migrateProject(result.project);
     if (!project) {
+      // The store is untouched on this branch: a file we will not open must
+      // never cost the user the project already loaded.
       store.setNotice({
         tone: 'danger',
         title: 'Could not open',
-        message: 'That file is not a video editor project',
+        message: describeProjectProblem(result.project),
       });
       return;
     }

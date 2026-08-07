@@ -14,7 +14,12 @@
     "build:electron": "node scripts/electron-pkg.mjs && tsc -p tsconfig.electron.json",
     "start": "electron .",
     "contract": "node scripts/check-contract.mjs",
-    "fixtures:media": "node scripts/make-dev-media.mjs"
+    "fixtures:media": "node scripts/make-dev-media.mjs",
+    "icon": "node scripts/make-icon.mjs",
+    "stage:ffmpeg": "node scripts/stage-ffmpeg.mjs",
+    "readme:keymap": "node scripts/gen-keymap.mjs",
+    "dist": "npm run build && npm run icon && npm run stage:ffmpeg && electron-builder --win --config electron-builder.yml",
+    "dist:nobundle": "npm run build && npm run icon && node scripts/stage-ffmpeg.mjs --skip && electron-builder --win --config electron-builder.yml"
   },
   "dependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.1.1",
@@ -36,16 +41,5 @@
     "typescript": "^5.7.2",
     "vite": "^5.4.11",
     "wait-on": "^8.0.1"
-  },
-  "build": {
-    "appId": "dev.local.videoeditor",
-    "productName": "Video Editor",
-    "files": [
-      "dist/**",
-      "dist-electron/**"
-    ],
-    "directories": {
-      "output": "release"
-    }
   }
 }

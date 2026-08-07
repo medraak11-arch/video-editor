@@ -1,7 +1,11 @@
 /* ---------------------------------------------------------------------------
-   TODO(export): replace with the real ffmpeg-backed bridge in
-   electron/ipc/export.ts and drop this file. This is the ONE stub boundary in
-   the build (PLAN §8.9).
+   exportStub — the `dev:web` export bridge, and nothing else.
+
+   `npm run dev:web` has no main process, so `getEditorAPI().export` is
+   undefined and ExportDialog falls back here. Inside Electron the real
+   ffmpeg-backed bridge (electron/ipc/export.ts) is defined and this module is
+   never reached. It is therefore NOT deleted when that bridge lands — see
+   EXPORT.md, "What replaces what".
 
    The stub simulates an encode; the progress it reports is real. It counts
    actual elapsed time against an actual frame total and emits what it has
@@ -12,8 +16,7 @@
    changes.
 --------------------------------------------------------------------------- */
 
-import type { ExportBridge, ExportProgressEvent, ExportSettings } from '../../types/api';
-import type { Frames } from '../../types/model';
+import type { ExportBridge, ExportProgressEvent, ExportRequest } from '../../types/api';
 
 /** Wall-clock shape of the simulated encode. */
 const PREPARE_MS = 450;
@@ -110,9 +113,10 @@ function schedule(job: Job): void {
 }
 
 export const exportStub: ExportBridge = {
-  start(
-    req: ExportSettings & { startFrame: Frames; durationFrames: Frames },
-  ): Promise<{ jobId: string }> {
+  /** Takes the full `ExportRequest` and ignores `document`: there is no graph to build
+      here, and a stub that refused the field the real bridge requires would not be
+      interchangeable with it. */
+  start(req: ExportRequest): Promise<{ jobId: string }> {
     counter += 1;
     const framesTotal = Math.max(1, Math.round(req.durationFrames));
     const job: Job = {

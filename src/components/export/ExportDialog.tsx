@@ -12,8 +12,9 @@
    and its copy and nothing else — hover, focus, disabled, loading and error
    styling are the primitives' to implement once.
 
-   The encode itself is stubbed in this build (see exportStub.ts) — but every UI
-   state below is real: the progress bar is determinate and driven purely by
+   The bridge is `getEditorAPI().export` in Electron — a real ffmpeg process —
+   and exportStub under `dev:web`, which has no main process. The dialog cannot
+   tell them apart and must not try: every UI state below is driven purely by
    ExportProgressEvent, cancel actually stops the job, and the dialog never runs
    a timer, never interpolates and never shows a percentage the bridge did not
    report. A bridge that refuses to start, or that starts and then goes silent,
@@ -34,6 +35,7 @@ import { CONTAINER } from '../../lib/constants';
 import { framesToDuration, framesToSeconds } from '../../lib/time';
 import type { ExportProgressEvent, ExportSettings } from '../../types/api';
 import { exportStub } from './exportStub';
+import { buildExportDocument } from './exportDocument';
 import { estimateBytes, formatBytes, formatFps, resolveExportRange } from './exportMath';
 
 const CODEC_OPTIONS: ReadonlyArray<{ value: ExportSettings['codec']; label: string }> = [
@@ -244,6 +246,10 @@ export function ExportDialog(): ReactElement {
         folder,
         startFrame: resolved.startFrame,
         durationFrames: resolved.durationFrames,
+        // A main-process bridge has no other way to see the timeline. Sent
+        // unfiltered — range and track flags are the graph builder's to apply,
+        // in one place (EXPORT §1.9, §6).
+        document: buildExportDocument(readStore()),
       });
       if (jobRef.current === null) jobRef.current = jobId;
       awaitingJob.current = false;
@@ -380,9 +386,16 @@ export function ExportDialog(): ReactElement {
               <span className="ve-export-result-icon" aria-hidden="true">
                 <Check size={16} strokeWidth={1.75} />
               </span>
-              Written to {settings.folder}
-              {settings.folder.endsWith('/') || settings.folder.endsWith('\\') ? '' : '/'}
-              {outputName}
+              {/* The path MAIN actually wrote, not the dialog's guess at it: main
+                  joins with path.join, which normalises separators this fallback
+                  does not, and it may reject a file name sanitiseFilename let
+                  through. The fallback stays for the stub, which writes nothing
+                  and so reports no outputPath. */}
+              Written to{' '}
+              {event?.outputPath ??
+                `${settings.folder}${
+                  settings.folder.endsWith('/') || settings.folder.endsWith('\\') ? '' : '/'
+                }${outputName}`}
             </p>
           ) : null}
 

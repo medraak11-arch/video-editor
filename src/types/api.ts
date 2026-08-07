@@ -7,7 +7,7 @@
    string, which is what stops the two from drifting.
 --------------------------------------------------------------------------- */
 
-import type { Frames, MediaError, MediaKind, ProjectFile } from './model';
+import type { Clip, Frames, MediaError, MediaId, MediaKind, ProjectFile, Track } from './model';
 
 export const CH = {
   windowMinimize: 'window:minimize',
@@ -21,6 +21,9 @@ export const CH = {
   projectSave: 'project:save',
   projectOpen: 'project:open',
   projectPickDir: 'project:pick-directory',
+  exportStart: 'export:start',
+  exportCancel: 'export:cancel',
+  exportProgress: 'export:progress', // main -> renderer
 } as const;
 
 export type ChannelName = (typeof CH)[keyof typeof CH];
@@ -65,15 +68,103 @@ export interface ExportSettings {
   range: 'entire' | 'inout';
 }
 
+/* ---- export errors — EXPORT §4 ------------------------------------------ */
+
+export type ExportErrorCode =
+  | 'ffmpeg-missing'
+  | 'invalid-filename'
+  | 'empty-timeline'
+  | 'source-missing'
+  | 'unsupported-codec'
+  | 'output-not-writable'
+  | 'permission-denied'
+  | 'disk-full'
+  | 'output-in-use'
+  | 'busy'
+  | 'encoder-failed';
+
+export interface ExportError {
+  code: ExportErrorCode;
+  /** One sentence, sentence case, no trailing period, safe to show verbatim. */
+  message: string;
+  /** True when re-running the identical request could succeed without user action. */
+  retryable: boolean;
+}
+
+/* ---- the document handed to the graph builder — EXPORT §5 --------------- */
+
+/**
+ * One source file. `path` is an ABSOLUTE filesystem path — never a 've-media://' URL,
+ * which exists for Chromium (PLAN §1.4) and which ffmpeg cannot open.
+ *
+ * `hasAudio` is a property of the FILE, not of the edit: every dev-media fixture has an
+ * audio stream even though its content is silence. Whether a clip is audible is decided
+ * by `volume` and the track's `muted` flag (EXPORT §1.4), never by guessing from content.
+ */
+export interface ExportSource {
+  mediaId: MediaId;
+  path: string;
+  kind: MediaKind;
+  hasAudio: boolean;
+  /** MediaItem.durationFrames — PROJECT frames, at ExportDocument.fps. */
+  durationFrames: Frames;
+  width: number;
+  height: number;
+}
+
+/**
+ * The timeline, flattened for the encoder. Every frame field is in PROJECT frames at
+ * `fps`; MediaItem.fps is never carried, because no frame calculation may read it
+ * (PLAN §2.4, the source-mapping invariant).
+ */
+export interface ExportDocument {
+  fps: number;
+  width: number;
+  height: number;
+  /**
+   * COMPOSITE order: video tracks bottom-first, then audio tracks in `trackOrder`
+   * order. This is NOT a plain reverse of the store's `trackOrder` — see EXPORT §6
+   * for the literal transform, which reverses only the video tracks.
+   */
+  tracks: Track[];
+  /** Every clip in the project. The builder filters by range and by track flags. */
+  clips: Clip[];
+  sources: ExportSource[];
+}
+
+/* ---- the request -------------------------------------------------------- */
+
+/**
+ * The DIALOG resolves `range` into absolute frames before calling (PLAN §8.9), and
+ * attaches the document — a main-process bridge has no other way to see the timeline.
+ *
+ * `document` is OPTIONAL so that this file can land before the renderer call site that
+ * fills it (EXPORT §6, "The seam"). Main treats an absent document as `empty-timeline`.
+ * It may be tightened to required once the call site exists.
+ */
+export type ExportRequest = ExportSettings & {
+  startFrame: Frames;
+  durationFrames: Frames;
+  document?: ExportDocument;
+};
+
 export interface ExportProgressEvent {
   jobId: string;
   phase: 'preparing' | 'encoding' | 'finalizing' | 'done' | 'cancelled' | 'error';
   /** 0..1, monotonic within a phase. */
   progress: number;
   framesDone: number;
+  /** OUTPUT frames: round(durationSeconds * settings.fps). */
   framesTotal: number;
-  /** Required when phase === 'error'. */
+  /** Required when phase === 'error'. Always equals `error.message` when `error` is set. */
   message?: string;
+  /** Set when phase === 'error'. Lets a future UI branch on the code without a contract change. */
+  error?: ExportError;
+  /**
+   * Set when phase === 'done'. The absolute path actually written — main's `path.join`
+   * result, which is what the dialog renders (EXPORT §6, RENDERER).
+   */
+  outputPath?: string;
 }
 
 export interface ExportBridge {
@@ -82,9 +173,7 @@ export interface ExportBridge {
    * bridge cannot know where an in/out range begins otherwise, and the stub and the real
    * bridge must be interchangeable.
    */
-  start(
-    req: ExportSettings & { startFrame: Frames; durationFrames: Frames },
-  ): Promise<{ jobId: string }>;
+  start(req: ExportRequest): Promise<{ jobId: string }>;
   cancel(jobId: string): Promise<void>;
   /** Returns its own unsubscribe. */
   onProgress(cb: (e: ExportProgressEvent) => void): () => void;
@@ -116,10 +205,19 @@ export interface EditorAPI {
       project: ProjectFile,
       opts?: { path?: string | null; saveAs?: boolean },
     ): Promise<SaveResult>;
-    open(): Promise<OpenResult>;
+    /**
+     * With a `path`, opens that file directly and never raises the picker —
+     * symmetric with `save`, whose `opts.path` already works that way. That is
+     * what 'open recent', a .veproj handed over by the OS, and any automated
+     * test of the open path all need. Omit it for the native picker.
+     */
+    open(path?: string): Promise<OpenResult>;
     pickDirectory(): Promise<string | null>;
   };
-  /** ABSENT in this build. ExportDialog falls back to the local stub. See PLAN §8.9. */
+  /**
+   * PRESENT in Electron once electron/ipc/export.ts lands. Absent under dev:web,
+   * where ExportDialog falls back to exportStub.
+   */
   export?: ExportBridge;
 }
 

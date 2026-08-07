@@ -243,11 +243,19 @@ Dependencies (scaffold installs; no slice adds one without reporting it):
 CDN. Electron is pinned at **major 33** because `File.path` was removed in 32 and the replacement
 `webUtils.getPathForFile` is assumed present (§4.2).
 
-**ffmpeg / ffprobe are NOT dependencies.** This build resolves both **on `PATH`** via `spawn`. That
-is what makes `MediaErrorCode = 'ffmpeg-missing'` a reachable, meaningful state rather than dead
-code, and it keeps the dependency list unchanged. Bundling `ffmpeg-static` is the named follow-up
-and is explicitly out of scope; do not add it. The exact invocations and the `ProbeData` field
-mapping are pinned in §4.3 so main and the fixture bridge cannot disagree.
+**ffmpeg / ffprobe are NOT dependencies.** Both are resolved via `spawn`, and nothing links against
+them. `MediaErrorCode = 'ffmpeg-missing'` therefore stays a reachable, meaningful state rather than
+dead code. The exact invocations and the `ProbeData` field mapping are pinned in §4.3 so main and
+the fixture bridge cannot disagree.
+
+> **Amended by packaging.** This paragraph originally said resolution happens on `PATH` and that
+> bundling was out of scope. PATH-only is correct for a repo and wrong for an installer: it means
+> the shipped app works on the machine that built it and on no other. Resolution now lives in
+> **`electron/ffmpeg.ts`** — the bundled copy at `<resources>/ffmpeg/` in a packaged build, `PATH`
+> in development, with `PATH` as the fallback in both. The dependency list is still unchanged: the
+> named follow-up `ffmpeg-static` is still **not** added, and `scripts/stage-ffmpeg.mjs` copies the
+> binaries the build machine already has rather than pulling a package. `npm run dist:nobundle`
+> builds the PATH-only variant this paragraph described.
 
 ### 1.3 State
 

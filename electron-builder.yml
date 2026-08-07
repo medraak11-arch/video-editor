@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# electron-builder.yml — how "Video Editor" becomes something you can install.
+#
+# Kept out of package.json so the decisions can carry their reasons. Every
+# non-default value below is here because of something specific about this app;
+# nothing is copied from a template.
+#
+# Build it with `npm run dist`. Output lands in dist-release/.
+# ---------------------------------------------------------------------------
+
+appId: dev.local.videoeditor
+productName: Video Editor
+copyright: © 2026
+
+directories:
+  output: dist-release
+  buildResources: build
+
+# The renderer is a Vite bundle and the main process is tsc output; every runtime
+# dependency is already inside dist/. Nothing in electron/ imports a package —
+# only 'electron' itself and node builtins — so node_modules is 240 MB of
+# nothing and is excluded outright.
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+  - '!node_modules/**'
+  - '!**/*.map'
+
+# ffmpeg and ffprobe, staged by scripts/stage-ffmpeg.mjs. This lands at
+# <install dir>/resources/ffmpeg/, which is the first place electron/ffmpeg.ts
+# looks. `npm run dist:nobundle` empties the folder and ships without them.
+extraResources:
+  - from: build/ffmpeg
+    to: ffmpeg
+    filter:
+      - '**/*'
+
+# Package against the Electron already in node_modules rather than re-downloading
+# the same 270 MB from GitHub. It also means a build cannot silently use a
+# different Electron than `npm start` and `npm run dev` do.
+electronDist: node_modules/electron/dist
+
+# Nothing here is native, so there is nothing to rebuild and no reason to spend
+# the time checking.
+npmRebuild: false
+buildDependenciesFromSource: false
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+# Per-user, not per-machine: this is a personal tool, and a per-user install
+# needs no UAC prompt and no administrator. The installer is not one-click —
+# a 300 MB install that starts before you have agreed to a location is rude.
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Video Editor
+  # Projects, window layout and theme live in userData. An uninstall removes the
+  # program; it does not remove your work.
+  deleteAppDataOnUninstall: false
+  artifactName: ${productName} ${version} Setup.${ext}
+
+portable:
+  artifactName: ${productName} ${version} Portable.${ext}

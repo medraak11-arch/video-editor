@@ -45,7 +45,7 @@ export function toPersistedMedia(item: MediaItem): PersistedMediaItem {
 
 export function serializeProject(s: StoreState): ProjectFile {
   return {
-    version: 1,
+    version: PROJECT_VERSION,
     name: s.projectName,
     fps: s.fps,
     width: s.width,
@@ -123,10 +123,40 @@ function validMedia(v: unknown): v is PersistedMediaItem {
   );
 }
 
+/** The only `version` this build writes and the only one it can read. */
+export const PROJECT_VERSION = 1;
+
+/**
+ * Why `migrateProject` refused a file, as one sentence the user can act on —
+ * sentence case, no trailing period, the Notice contract (PLAN §7.6).
+ *
+ * This exists because `null` is not an error message. A project saved by a
+ * newer build and a JPEG renamed to .veproj are the same `null`, and telling
+ * the user "that is not a project" about their own project is a lie that costs
+ * them the file. Only ever called on the failure branch.
+ */
+export function describeProjectProblem(raw: unknown): string {
+  if (!isObject(raw)) return 'That file is not a video editor project';
+
+  const version = raw.version;
+  if (isFiniteNumber(version) && version > PROJECT_VERSION) {
+    return `That project was saved by a newer version of the editor (file version ${version}, this one reads ${PROJECT_VERSION})`;
+  }
+  if (isFiniteNumber(version) && version < PROJECT_VERSION) {
+    return `That project uses an older format (version ${version}) that this version can no longer open`;
+  }
+  if (version === undefined) return 'That file is not a video editor project';
+  if (!isFiniteNumber(version)) return 'That file is not a video editor project';
+
+  // Right version, wrong body: the arrays migrateProject needs are missing or
+  // are not arrays. A half-written or hand-edited file lands here.
+  return 'That project file is incomplete or damaged';
+}
+
 /** null = not a project file. Never throws. */
 export function migrateProject(raw: unknown): ProjectFile | null {
   if (!isObject(raw)) return null;
-  if (raw.version !== 1) return null;
+  if (raw.version !== PROJECT_VERSION) return null;
   if (!Array.isArray(raw.media) || !Array.isArray(raw.tracks)) return null;
   if (!Array.isArray(raw.trackOrder) || !Array.isArray(raw.clips)) return null;
 
@@ -141,7 +171,7 @@ export function migrateProject(raw: unknown): ProjectFile | null {
   );
 
   return {
-    version: 1,
+    version: PROJECT_VERSION,
     name: typeof raw.name === 'string' && raw.name.trim() !== '' ? raw.name : 'Untitled',
     fps,
     width,

@@ -14,7 +14,14 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import { CH } from '../src/types/api';
-import type { EditorAPI, OpenResult, ProbeResult, SaveResult } from '../src/types/api';
+import type {
+  EditorAPI,
+  ExportProgressEvent,
+  ExportRequest,
+  OpenResult,
+  ProbeResult,
+  SaveResult,
+} from '../src/types/api';
 import type { ProjectFile } from '../src/types/model';
 
 /** Subscribes and hands back its own unsubscribe. */
@@ -57,13 +64,19 @@ const api: EditorAPI = {
   project: {
     save: (project: ProjectFile, opts) =>
       ipcRenderer.invoke(CH.projectSave, project, opts ?? {}) as Promise<SaveResult>,
-    open: () => ipcRenderer.invoke(CH.projectOpen) as Promise<OpenResult>,
+    open: (path) => ipcRenderer.invoke(CH.projectOpen, path ?? null) as Promise<OpenResult>,
     pickDirectory: () => ipcRenderer.invoke(CH.projectPickDir) as Promise<string | null>,
   },
 
-  // `export` is deliberately absent in this build: ExportDialog falls back to its local
-  // stub (PLAN §8.9). Declaring it as undefined here would still satisfy the optional
-  // property, but leaving it out keeps `getEditorAPI().export ?? exportStub` honest.
+  // Adding this member is what flips `getEditorAPI().export ?? exportStub` to the
+  // real ffmpeg bridge inside Electron. Under dev:web there is no preload, so the
+  // member is absent and the dialog keeps falling back to its local stub.
+  export: {
+    start: (req: ExportRequest) =>
+      ipcRenderer.invoke(CH.exportStart, req) as Promise<{ jobId: string }>,
+    cancel: (jobId: string) => ipcRenderer.invoke(CH.exportCancel, jobId) as Promise<void>,
+    onProgress: (cb) => subscribe<ExportProgressEvent>(CH.exportProgress, cb),
+  },
 };
 
 contextBridge.exposeInMainWorld('editorAPI', api);
