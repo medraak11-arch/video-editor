@@ -42,6 +42,10 @@ export type ShortcutId =
   // entry point in the UI, and the slice spec requires open to work. Purely
   // additive: SHORTCUT_BY_ID stays total, so no consumer changes.
   | 'file.open'
+  // Export is the one terminal action in the app and PRODUCT.md principle 3
+  // makes the keyboard the primary instrument, so it cannot be menu-only.
+  // Additive in the same way as 'file.open' above.
+  | 'file.export'
   | 'view.zoomIn'
   | 'view.zoomOut'
   | 'view.zoomFit'
@@ -71,6 +75,7 @@ export type ShortcutHandlerName =
   | 'importMedia'
   | 'saveProject'
   | 'openProject'
+  | 'openExportDialog'
   | 'zoomIn'
   | 'zoomOut'
   | 'zoomToFit'
@@ -133,6 +138,10 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'file.import', keys: ['Ctrl+I'], label: 'Import media', scope: 'global', handler: 'importMedia' },
   { id: 'file.save', keys: ['Ctrl+S'], label: 'Save project', scope: 'global', handler: 'saveProject' },
   { id: 'file.open', keys: ['Ctrl+O'], label: 'Open project', scope: 'global', handler: 'openProject' },
+  // Global, not 'dialog': it opens the export dialog, it does not act inside it.
+  // Once the dialog is up `selectOverlayOpen` gates every non-dialog row out, so
+  // Ctrl+E cannot re-fire against an export that is already on screen.
+  { id: 'file.export', keys: ['Ctrl+E'], label: 'Export video', scope: 'global', handler: 'openExportDialog' },
 
   // --- help ---------------------------------------------------------------
   { id: 'help.shortcuts', keys: ['?'], label: 'Show keyboard shortcuts', scope: 'global', handler: 'toggleShortcutOverlay' },

@@ -17,6 +17,7 @@ export const CH = {
   windowMaxChanged: 'window:maximize-changed', // main -> renderer
   mediaPick: 'media:pick',
   mediaProbe: 'media:probe',
+  mediaRename: 'media:rename',
   mediaProbeProgress: 'media:probe-progress', // main -> renderer
   projectSave: 'project:save',
   projectOpen: 'project:open',
@@ -47,6 +48,37 @@ export interface ProbeData {
 }
 
 export type ProbeResult = { ok: true; data: ProbeData } | { ok: false; error: MediaError };
+
+/* ---- renaming a file on disk — RENAME.md §IPC contract ------------------ */
+
+/**
+ * The six reachable outcomes. Every `message` is one sentence, safe to render
+ * verbatim next to an icon: main never puts an errno, a path or a stack in it.
+ *
+ * 'file-in-use' and 'permission' are distinct on purpose — one is fixed by
+ * closing another program, the other is not fixable from inside this app, and a
+ * single "could not rename" would leave the user with nothing to try.
+ */
+export type RenameError =
+  | { code: 'invalid-name'; message: string }
+  | { code: 'name-taken'; message: string }
+  | { code: 'not-found'; message: string }
+  | { code: 'permission'; message: string }
+  | { code: 'file-in-use'; message: string }
+  | { code: 'io-failed'; message: string };
+
+/**
+ * `path` and `name` are the NEW absolute path and the new basename INCLUDING the
+ * extension — `MediaItem.path` and `MediaItem.name` respectively.
+ *
+ * `url` is built by main rather than rebuilt by the renderer so the 've-media://'
+ * encoding (PLAN §1.4) stays owned by one function. A renderer that concatenated
+ * its own would be one `encodeURIComponent` away from a source that silently
+ * fails to load for any name containing a '#' or a '%'.
+ */
+export type RenameResult =
+  | { ok: true; path: string; url: string; name: string }
+  | { ok: false; error: RenameError };
 
 export type SaveResult =
   | { ok: true; path: string }
@@ -193,6 +225,17 @@ export interface EditorAPI {
     pickFiles(): Promise<string[]>;
     /** Never throws. */
     probe(path: string): Promise<ProbeResult>;
+    /**
+     * Renames the file on disk, in place, in the same directory. `baseName`
+     * EXCLUDES the extension, which is preserved and is not renameable
+     * (RENAME.md §Scope). Never throws, never overwrites an existing file, and
+     * does not touch the disk when `baseName` already matches.
+     *
+     * Main validates `baseName` again with the same predicate the renderer uses
+     * (`src/lib/filename.ts`); a renderer that skipped its check cannot get an
+     * illegal name onto the filesystem.
+     */
+    rename(path: string, baseName: string): Promise<RenameResult>;
     onProbeProgress(cb: (e: { path: string; progress: number }) => void): () => void;
     /**
      * Synchronous. Preload-only capability (webUtils.getPathForFile); null in the fixture

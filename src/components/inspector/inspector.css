@@ -17,6 +17,16 @@
   flex-direction: column;
 }
 
+/* =============================================================== identity
+   The Name row, above the first group and outside every disclosure. It carries
+   the same hairline a group does and the same horizontal gutter, so the column
+   reads as one stack rather than as a field bolted onto the top of it. */
+
+.ve-inspector-identity {
+  padding: var(--space-lg) var(--space-lg) var(--space-md);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
 /* ================================================================== group */
 
 .ve-group {

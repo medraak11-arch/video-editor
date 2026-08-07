@@ -20,6 +20,7 @@ import type {
   ExportRequest,
   OpenResult,
   ProbeResult,
+  RenameResult,
   SaveResult,
 } from '../src/types/api';
 import type { ProjectFile } from '../src/types/model';
@@ -49,6 +50,8 @@ const api: EditorAPI = {
   media: {
     pickFiles: () => ipcRenderer.invoke(CH.mediaPick) as Promise<string[]>,
     probe: (path: string) => ipcRenderer.invoke(CH.mediaProbe, path) as Promise<ProbeResult>,
+    rename: (path: string, baseName: string) =>
+      ipcRenderer.invoke(CH.mediaRename, path, baseName) as Promise<RenameResult>,
     onProbeProgress: (cb) =>
       subscribe<{ path: string; progress: number }>(CH.mediaProbeProgress, cb),
     /** Preload-only capability. There is no `(file as any).path` anywhere in this codebase. */

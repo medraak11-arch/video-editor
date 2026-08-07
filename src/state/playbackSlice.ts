@@ -115,10 +115,22 @@ const escalate = (magnitude: number): number => {
 
 /** Snaps an odd source rate onto a known rate. Exported so media can report honestly. */
 export function snapKnownFps(fps: number): number {
+  // NEAREST within tolerance, not the first match. KNOWN_FPS is ascending and the
+  // tolerance is wider than the gap inside the two NTSC pairs (23.976/24 differ by
+  // 0.024, 29.97/30 by 0.03), so first-match silently snapped a true 30.000 source
+  // down to 29.97 and a true 24.000 to 23.976 — and every duration and timecode in
+  // the project is re-derived from that rate.
+  let best = fps;
+  let bestDelta = Number.POSITIVE_INFINITY;
   for (const known of KNOWN_FPS) {
-    if (Math.abs(known - fps) <= FPS_SNAP_TOLERANCE) return known;
+    const delta = Math.abs(known - fps);
+    // Strict < keeps an exact tie on the lower rate: arbitrary, but stable.
+    if (delta <= FPS_SNAP_TOLERANCE && delta < bestDelta) {
+      best = known;
+      bestDelta = delta;
+    }
   }
-  return fps;
+  return best;
 }
 
 export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({

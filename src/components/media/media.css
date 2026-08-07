@@ -100,6 +100,74 @@
   color: var(--text-muted);
 }
 
+/* A row being renamed grows to hold the field and, when the rename is refused,
+   the sentence under it. The 44px rhythm is the RESTING rhythm; forcing it while
+   an error is on screen would clip the only thing telling the user what to do. */
+.media-row[data-editing='true'] {
+  height: auto;
+  min-height: var(--media-row-h);
+  padding-top: var(--space-xs);
+  padding-bottom: var(--space-xs);
+  align-items: start;
+}
+
+/* Remove sits one press away from a field the user is typing a name into. It
+   comes back the moment the editor closes. */
+.media-row[data-editing='true'] .media-row-actions {
+  display: none;
+}
+
+/* The context-menu anchor. Zero-size and fixed at the pointer, so the shared
+   Menu primitive opens where the user clicked. It paints nothing, takes no space
+   in the row's grid and is out of the tab order — the row's Menu key and
+   Shift+F10 are the keyboard route (RENAME.md §Media rail context menu). */
+.media-row-menu-anchor {
+  position: fixed;
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------ rename field
+   The base name is editable; the extension beside it is not, because the
+   container and the codec are bound to it (RENAME.md §Scope). Baselines are
+   aligned on the first line so the extension sits beside the INPUT rather than
+   beside the input-plus-message column. */
+
+.media-name-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-xs);
+  row-gap: var(--space-xs);
+  min-width: 0;
+}
+
+/* The field's own column layout is dissolved into this grid so its refusal
+   message can span the FULL width instead of the input's. In a 240px rail the
+   difference is a sentence on two lines against one on five, and the message is
+   the only thing on screen that says what to do next. `display: contents`
+   changes no box the primitive paints — .ve-field draws nothing itself. */
+.media-name-field .ve-field {
+  display: contents;
+}
+
+.media-name-field .ve-field-message {
+  grid-column: 1 / -1;
+}
+
+.media-name-ext {
+  display: flex;
+  align-items: center;
+  grid-row: 1;
+  grid-column: 2;
+  height: 26px;
+  color: var(--text-muted);
+}
+
 /* ---------------------------------------------------------------- thumbnail */
 
 .media-row-thumb {

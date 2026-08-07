@@ -26,7 +26,7 @@
 --------------------------------------------------------------------------- */
 
 import './media.css';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactElement } from 'react';
 import { FolderInput } from 'lucide-react';
 import type { MediaId } from '../../types/model';
@@ -45,6 +45,14 @@ export function MediaRail(): ReactElement {
   const [preferredId, setPreferredId] = useState<MediaId | null>(null);
   const [activeId, setActiveId] = useState<MediaId | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
+
+  // Renaming is blocked while an export is running (RENAME.md §Edge cases), and
+  // the export dialog keeps its job state locally — this attaches the one
+  // progress listener that gives the store something to gate on. Idempotent, so
+  // collapsing and reopening the rail costs nothing.
+  useEffect(() => {
+    readStore().watchExportActivity();
+  }, []);
 
   // The tabbable row survives a removal by falling back to the first row. This
   // is the roving anchor only — it is never rendered as a highlight.

@@ -155,6 +155,9 @@ const HANDLERS: Record<ShortcutHandlerName, () => void> = {
   openProject: () => {
     void openProject();
   },
+  // Open only, never toggle: the dialog owns Escape (and its own Cancel), and a
+  // second Ctrl+E cannot reach here anyway while an overlay is up.
+  openExportDialog: () => readStore().setExportDialogOpen(true),
 
   toggleShortcutOverlay: () => {
     const s = readStore();

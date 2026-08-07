@@ -35,7 +35,8 @@ import type {
   Track,
 } from '../types/model';
 import { DEFAULT_CLIP_PROPERTIES } from '../types/model';
-import type { EditorAPI, ProbeData, ProbeResult } from '../types/api';
+import type { EditorAPI, ProbeData, ProbeResult, RenameResult } from '../types/api';
+import { checkBaseName, renamedPath, splitMediaPath } from '../lib/filename';
 import { applyProject } from '../lib/project';
 
 const FPS = 30;
@@ -489,6 +490,46 @@ async function fixtureProbe(path: string): Promise<ProbeResult> {
   return stagedProbe(path, known);
 }
 
+/**
+ * Rename, browser edition. There is no filesystem here, so nothing moves — but
+ * the RULE is the real one (src/lib/filename.ts, the same predicate main uses),
+ * and 'name-taken' is reachable against the other fixture paths. That is what
+ * makes the rename UI developable under dev:web without pretending a disk exists.
+ *
+ * `url` is returned UNCHANGED, because the file Vite serves out of /dev-media is
+ * unchanged: only the pseudo-path the fixture reports has moved.
+ */
+async function fixtureRename(path: string, baseName: string): Promise<RenameResult> {
+  const { base, ext } = splitMediaPath(path);
+
+  const check = checkBaseName(baseName, path);
+  if (!check.ok) return { ok: false, error: { code: 'invalid-name', message: check.message } };
+
+  const known = MEDIA.find((m) => pathOf(m) === path);
+  const url = known ? urlOf(known) : '';
+
+  if (baseName === base) return { ok: true, path, url, name: `${base}${ext}` };
+
+  const target = renamedPath(path, baseName);
+  const taken = MEDIA.some(
+    (m) => pathOf(m) !== path && pathOf(m).toLowerCase() === target.toLowerCase(),
+  );
+  if (taken) {
+    return {
+      ok: false,
+      error: {
+        code: 'name-taken',
+        message: 'A file with that name already exists in this folder',
+      },
+    };
+  }
+
+  // Long enough for the row's busy state to be visible, which is the point of
+  // having this at all.
+  await wait(250);
+  return { ok: true, path: target, url, name: `${baseName}${ext}` };
+}
+
 const noBridge = (what: string): { code: 'io-failed'; message: string } => ({
   code: 'io-failed',
   message: `${what} is not available in the browser preview`,
@@ -510,6 +551,7 @@ export const fixtureAPI: EditorAPI = {
   media: {
     pickFiles: () => Promise.resolve([...PICKER_PATHS]),
     probe: fixtureProbe,
+    rename: fixtureRename,
     onProbeProgress: (cb) => {
       progressListeners.add(cb);
       return () => {

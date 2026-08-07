@@ -20,12 +20,20 @@
         --status-warning in the build.
      7. markDirty — via addItem, which is on PLAN §3.1's dirty list.
 
+   Renaming a file on disk (RENAME.md) lives here too, because it is one
+   `updateItem` plus the protocol that makes that update safe: detach every
+   <video> holding the source, call the bridge, then land the new path/url/name
+   on EVERY row that pointed at that file — or put the old url back. It marks the
+   project dirty and pushes NO history entry: `history` is a stack of TimelineDoc
+   snapshots, and a filesystem side effect inside it would mean a Ctrl+Z issued
+   to undo a trim silently renamed a file back.
+
    Browser (no window.editorAPI, no filesystem path): a dropped File is read
    through an object URL and a media element, so `npm run dev:web` exercises the
    real drop path rather than a stub. PLAN §3.2: never `(file as any).path`.
 --------------------------------------------------------------------------- */
 
-import type { ProbeResult } from '../types/api';
+import type { ProbeResult, RenameError, RenameResult } from '../types/api';
 import type {
   MediaId,
   MediaItem,
@@ -37,9 +45,27 @@ import type {
 import type { SliceCreator, StoreState } from './types';
 import { getEditorAPI } from '../lib/editorApi';
 import { newId } from '../lib/id';
+import { checkBaseName } from '../lib/filename';
 import { secondsToFrames } from '../lib/time';
 
 /* ------------------------------------------------------------------- types */
+
+/**
+ * A rename in flight, and the last one that failed. RENAME.md asks for a
+ * `renaming` MediaStatus; this slice keeps it BESIDE `MediaItem.status` instead,
+ * because `status` is the field `offlineClipIds` projects (see `updateItem`) and
+ * the field `PersistedMediaItem` drops on save. A fourth member of that union
+ * would have to be handled by every `status === 'error'` guard, by the timeline's
+ * offline projection and by the export document builder — none of which are in
+ * this feature's blast radius — to express something that lasts 40ms and is
+ * owned entirely by the media rail. See the final note in §Renaming below.
+ */
+export interface RenameUiState {
+  /** True from the moment the source is detached until the bridge answers. */
+  busy: boolean;
+  /** The last failure, verbatim from main. Cleared when the next attempt starts. */
+  error: RenameError | null;
+}
 
 export interface MediaState {
   items: Record<MediaId, MediaItem>;
@@ -47,6 +73,14 @@ export interface MediaState {
   order: MediaId[];
   /** True while a file drag from the OS is over the window. Drives the drop affordance. */
   dropActive: boolean;
+  /** Per-row rename state. An absent entry is idle and clean. */
+  renames: Record<MediaId, RenameUiState>;
+  /**
+   * True while an export job is running. RENAME.md §Edge cases blocks renaming
+   * for its duration: the graph builder reads source paths when it starts, so a
+   * file that moves underneath it fails the encode halfway through.
+   */
+  exportRunning: boolean;
 }
 
 export interface MediaActions {
@@ -61,6 +95,21 @@ export interface MediaActions {
   /** Does not delete clips: calls get().markClipsOffline(id). */
   removeItem(id: MediaId): void;
   retryItem(id: MediaId): void;
+  /**
+   * Renames the real file on disk and lands the result on every row that pointed
+   * at it. RENAME.md §The file-lock problem, in full: detach, call, re-attach.
+   * Never throws, never pushes a history entry, marks the project dirty on
+   * success. `baseName` EXCLUDES the extension.
+   */
+  renameMedia(id: MediaId, baseName: string): Promise<RenameResult>;
+  /** Drops a row's inline rename error without starting another attempt. */
+  clearRenameError(id: MediaId): void;
+  /**
+   * Idempotent, called from the mount of anything that offers rename. Attaches
+   * the one export-progress listener that maintains `exportRunning`; the export
+   * dialog owns no store state, so this is the only signal a slice can read.
+   */
+  watchExportActivity(): void;
   setDropActive(active: boolean): void;
   /** Re-derives durationFrames for every item after a project-fps change. */
   recomputeMediaDurations(fps: number): void;
@@ -120,6 +169,97 @@ const isProbeablePath = (p: string): boolean => p.length > 0 && /[\\/]/.test(p);
  */
 export const canRetryMedia = (item: MediaItem): boolean =>
   !isObjectUrl(item.url) && isProbeablePath(item.path);
+
+/* ------------------------------------------------------- renaming on disk
+   RENAME.md. The model work is one `updateItem` — `Clip.mediaId` is the only
+   reference to a file anywhere in the document, so one row update fixes every
+   clip, every thumbnail strip and the preview at once. Everything below is the
+   part that is not the model: the file may be held open by the preview.       */
+
+/** Shared identity, so the selector can answer "idle" without allocating. */
+const RENAME_IDLE: RenameUiState = { busy: false, error: null };
+
+/* The two sentences main cannot say, because on these two paths main was never
+   reached. Same register as RENAME_MESSAGE in electron/ipc/media.ts: one
+   sentence, sentence case, no path and no stack. */
+const RENAME_GONE = 'That file could not be found on disk';
+const RENAME_BRIDGE_FAILED = 'That file could not be renamed';
+
+/**
+ * Why renaming is refused, or null when it is allowed. Every string is rendered
+ * verbatim as a `disabledReason` on the menu item and on the field, so each one
+ * says what to do about it rather than that something is wrong.
+ *
+ * [stable] — returns a literal or null, so it is safe in a hook.
+ */
+export const selectRenameDisabledReason = (s: StoreState, id: MediaId): string | null => {
+  const item = s.items[id];
+  if (!item) return RENAME_GONE;
+  if (s.exportRunning) return 'Not while an export is running';
+  if (item.status === 'probing') return 'Not until this file has finished importing';
+  if (item.status === 'error' && item.error?.code === 'not-found') return RENAME_GONE;
+  // A browser-imported row is a Blob and a bare filename: there is no file on
+  // any disk to rename, and sending that name over the bridge would be a
+  // filesystem call against a path that means nothing.
+  if (isObjectUrl(item.url) || !isProbeablePath(item.path)) {
+    return 'That file was opened in the browser and has no location on disk';
+  }
+  return null;
+};
+
+/** The phases during which an export is holding source paths open. */
+const RUNNING_EXPORT_PHASES: ReadonlySet<string> = new Set([
+  'preparing',
+  'encoding',
+  'finalizing',
+]);
+
+/** Attached at most once per session; there is nothing to detach it from. */
+let exportWatchAttached = false;
+
+/**
+ * Two rows may point at one file (RENAME.md §Edge cases), and on a Windows
+ * volume they may spell it differently. `path.resolve` is a node function, so
+ * the comparison is done on the string with the separator normalised.
+ */
+function isSameFile(a: string, b: string, platform: string): boolean {
+  if (a === b) return true;
+  const normalise = (p: string): string => p.replace(/\//g, '\\');
+  return platform === 'win32'
+    ? normalise(a).toLowerCase() === normalise(b).toLowerCase()
+    : normalise(a) === normalise(b);
+}
+
+/**
+ * Every <video> currently holding this source. That is VideoSurface's two-element
+ * pool in practice, but it is found by source rather than by reaching into that
+ * component's refs: the pool is its private business, and a rename must release
+ * the handle whoever is holding it.
+ */
+function videosHolding(url: string): HTMLVideoElement[] {
+  if (url === '' || typeof document === 'undefined') return [];
+  return Array.from(document.querySelectorAll('video')).filter(
+    (el) => el.getAttribute('src') === url,
+  );
+}
+
+/**
+ * RENAME.md §The file-lock problem, step 2. Clearing the attribute and calling
+ * `load()` runs the media load algorithm, which aborts the fetch and drops the
+ * decoder's handle on the file; without it Windows answers `fs.rename` with
+ * EPERM and the user is told to close a program that is this one.
+ *
+ * The microtask is the spec's, and it is deliberately not a timeout: `load()`
+ * does its teardown synchronously, so one turn of the queue is enough and a
+ * timeout would only add latency to the common case.
+ */
+async function detachSources(elements: HTMLVideoElement[]): Promise<void> {
+  for (const el of elements) {
+    el.removeAttribute('src');
+    el.load();
+  }
+  await Promise.resolve();
+}
 
 function pendingItem(path: string, name: string, kind: MediaKind): MediaItem {
   return {
@@ -443,10 +583,61 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
     }
   };
 
+  /** Writes one row's rename state; `null` returns it to idle and clean. */
+  const setRename = (id: MediaId, next: RenameUiState | null): void =>
+    set((s) => {
+      if (next === null && s.renames[id] === undefined) return {};
+      const renames = { ...s.renames };
+      if (next === null) delete renames[id];
+      else renames[id] = next;
+      return { renames };
+    });
+
+  const failRename = (id: MediaId, error: RenameError): RenameResult => {
+    setRename(id, { busy: false, error });
+    return { ok: false, error };
+  };
+
+  /**
+   * Step 5, and the tail of step 4. React re-attaches by itself whenever the url
+   * actually changed — the store write moves `MediaItem.url`, VideoSurface's pool
+   * derives a new src during render and the DOM diff sets it. It does NOT
+   * re-attach when the url is unchanged (a no-op rename, or the fixture bridge,
+   * which keeps serving the same file), because React compares its own previous
+   * prop and sees no change: the attribute this function cleared would stay
+   * cleared and the preview would sit black. So the two cases that React cannot
+   * see — unchanged url, and failure — are re-attached here.
+   *
+   * The playhead is not touched, by anyone: VideoSurface's `loadedmetadata`
+   * handler seeks the element back to whatever frame the playhead still holds.
+   * Resuming `play()` is this function's job only because no store field changed
+   * on these two paths, so the transport effect that would normally do it does
+   * not re-run.
+   */
+  const reattachSources = (elements: HTMLVideoElement[], url: string): void => {
+    if (url === '') return;
+    for (const el of elements) {
+      if (el.getAttribute('src') === url) continue;
+      el.setAttribute('src', url);
+      el.load();
+    }
+    const s = get();
+    if (!s.isPlaying || s.rate <= 0) return;
+    for (const el of elements) {
+      // data-active is VideoSurface's published "this is the element on screen".
+      if (el.dataset.active !== 'true') continue;
+      void el.play().catch(() => {
+        /* The element fires `error` too, and VideoSurface owns that report. */
+      });
+    }
+  };
+
   return {
     items: {},
     order: [],
     dropActive: false,
+    renames: {},
+    exportRunning: false,
 
     /* ------------------------------------------------------------- import */
 
@@ -496,6 +687,101 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
       void probeRows([{ id, path: item.path }]);
     },
 
+    /* ------------------------------------------------------------- rename */
+
+    clearRenameError: (id) => {
+      const current = get().renames[id];
+      if (!current || current.error === null) return;
+      setRename(id, current.busy ? { busy: true, error: null } : null);
+    },
+
+    watchExportActivity: () => {
+      if (exportWatchAttached) return;
+      let bridge;
+      try {
+        bridge = getEditorAPI().export;
+      } catch {
+        return; // called before the fallback bridge was registered; a later mount retries
+      }
+      if (!bridge) return; // dev:web, where the dialog runs its local stub
+      exportWatchAttached = true;
+      const running = new Set<string>();
+      bridge.onProgress((e) => {
+        if (RUNNING_EXPORT_PHASES.has(e.phase)) running.add(e.jobId);
+        else running.delete(e.jobId);
+        const next = running.size > 0;
+        if (get().exportRunning !== next) set({ exportRunning: next });
+      });
+    },
+
+    renameMedia: async (id, baseName) => {
+      const item = get().items[id];
+      if (!item) {
+        return {
+          ok: false,
+          error: { code: 'not-found', message: RENAME_GONE },
+        };
+      }
+
+      // The gate the UI already renders as a disabledReason, restated here: an
+      // action must not depend on its own affordance having been drawn correctly.
+      const blocked = selectRenameDisabledReason(get(), id);
+      if (blocked !== null) return failRename(id, { code: 'io-failed', message: blocked });
+
+      // The renderer's copy of the rule (RENAME.md §Validation). Main checks it
+      // again — this one exists so an illegal name never reaches the bridge and
+      // never costs the preview its source.
+      const check = checkBaseName(baseName, item.path);
+      if (!check.ok) return failRename(id, { code: 'invalid-name', message: check.message });
+
+      const previousPath = item.path;
+      const previousUrl = item.url;
+
+      setRename(id, { busy: true, error: null });
+
+      // Steps 2 and 3. The detach happens whatever the outcome, so the re-attach
+      // below is unconditional too.
+      const held = videosHolding(previousUrl);
+      await detachSources(held);
+
+      let result: RenameResult;
+      try {
+        result = await getEditorAPI().media.rename(previousPath, baseName);
+      } catch {
+        // The bridge contract says it never throws. If it does anyway, the
+        // source still has to come back.
+        result = { ok: false, error: { code: 'io-failed', message: RENAME_BRIDGE_FAILED } };
+      }
+
+      if (!result.ok) {
+        reattachSources(held, previousUrl);
+        return failRename(id, result.error);
+      }
+
+      // Step 4, keyed by resolved path rather than by id: two rows may reference
+      // one file, and a row left holding the old path would go offline on the
+      // next probe (RENAME.md §Edge cases).
+      const platform = getEditorAPI().platform;
+      for (const otherId of get().order) {
+        const other = get().items[otherId];
+        if (!other || !isSameFile(other.path, previousPath, platform)) continue;
+        get().updateItem(otherId, {
+          path: result.path,
+          url: result.url,
+          name: result.name,
+        });
+      }
+
+      setRename(id, null);
+      // The stored path changed, so the project is dirty — but NOTHING is pushed
+      // onto `history`. RENAME.md §Undo: a Ctrl+Z issued to undo an unrelated
+      // trim must never rename a file back on disk.
+      get().markDirty();
+
+      if (result.url === previousUrl) reattachSources(held, previousUrl);
+      return result;
+    },
+
     /* -------------------------------------------------------------- store */
 
     addItem: (item) => {
@@ -535,7 +821,9 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
       set((s) => {
         const items = { ...s.items };
         delete items[id];
-        return { items, order: s.order.filter((existing) => existing !== id) };
+        const renames = { ...s.renames };
+        delete renames[id];
+        return { items, renames, order: s.order.filter((existing) => existing !== id) };
       });
       // Clips are NOT deleted: they go offline and the project stays editable.
       get().markClipsOffline(id);
@@ -584,7 +872,9 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
         };
         order.push(persisted.id);
       }
-      set({ items: next, order });
+      // Every row is replaced, so no rename error or busy flag from the outgoing
+      // set describes anything that still exists.
+      set({ items: next, order, renames: {} });
       get().recomputeOfflineClips();
       // Re-probe every item by path through the same capped pool as an import. This is
       // also the only way a moved or deleted file is detected (PLAN §2.6).
@@ -597,6 +887,14 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
 
 /** [stable] */
 export const selectMediaItem = (s: StoreState, id: MediaId): MediaItem | undefined => s.items[id];
+
+/**
+ * [stable] The rename state of one row. Returns the shared idle object rather
+ * than undefined, so a component can read `.busy` without a guard and a
+ * subscription to it does not fire on every unrelated store write.
+ */
+export const selectRenameState = (s: StoreState, id: MediaId): RenameUiState =>
+  s.renames[id] ?? RENAME_IDLE;
 
 /** [stable] The rail row list. `order` is only reallocated on add/remove. */
 export const selectMediaOrder = (s: StoreState): readonly MediaId[] => s.order;

@@ -16,6 +16,8 @@ sign in to. The chrome stays dark and quiet so the frame is the only lit thing o
   undo.
 - Preview with real transport: play/pause, J-K-L shuttle, frame stepping, in and out points.
 - Per-clip transform (scale, position, rotation, opacity), speed and volume in the inspector.
+- Rename a source file on disk, from the media rail's context menu or the inspector's `Name`
+  field. The extension is preserved; every clip cut from the file follows the new name.
 - Export to H.264, H.265 or ProRes at a chosen size, rate and quality, over the whole timeline or
   the in–out range. One ffmpeg process, real progress, working cancel.
 - Projects save as `.veproj` — plain JSON you can read, diff and keep in version control.
@@ -42,7 +44,21 @@ Other entry points:
 | `npm start` | Run the built app without packaging it. |
 | `npm run typecheck` | Both tsconfigs, no emit. |
 | `npm run contract` | The design-contract checker: hardcoded colours, undefined tokens, missing theme values, removed focus rings, accent budget. |
-| `npm run fixtures:media` | Generate `dev-media/` — synthetic clips to edit against. Needs ffmpeg. |
+| `npm run fixtures:media` | Rebuild `dev-media/` — synthetic clips to edit against. Needs ffmpeg. |
+
+`dev-media/` is gitignored, so a clean checkout has none of it: run `npm run fixtures:media`
+once and every file appears. The command rebuilds all nine from scratch on every run rather
+than skipping what already exists, so a stale fixture cannot survive a regeneration, and the
+encodes are bit-exact — two runs produce byte-identical files.
+
+Each fixture carries **audible, identifiable audio**, which is the only reason any claim about
+the mixer can be checked. The six video clips are steady sine tones at 300, 500, 700, 1100,
+1300 and 1700 Hz — distinct primes × 100, so no clip's tone is a harmonic of another and a mix
+can be taken apart by frequency. The three audio files differ in shape as well as pitch: brown
+noise for the room tone, an A minor chord under a tremolo for the music bed, and 850 Hz in
+syllable-shaped bursts for the voice-over. `scripts/make-dev-media.mjs` documents every
+signature and the exact ffmpeg command that reads one back, then measures what it just wrote
+and fails if anything comes back near silence.
 
 ### If Electron will not start
 
@@ -88,6 +104,7 @@ buttons keep their own keys.
 | `Ctrl+I` | Import media |
 | `Ctrl+S` | Save project |
 | `Ctrl+O` | Open project |
+| `Ctrl+E` | Export video |
 | `?` | Show keyboard shortcuts |
 
 **Timeline**
@@ -184,6 +201,9 @@ These are design decisions and honest gaps, not bugs.
   the only warning you get.
 - **One export at a time per window.** Starting a second reports that one is already running rather
   than queueing it.
+- **Renaming a file is not undoable.** `Ctrl+Z` is a stack of timeline snapshots and a disk rename
+  is deliberately not in it, so undoing an unrelated trim can never rename a file back behind your
+  back. Rename fails safely — it never overwrites — but reversing one means renaming it again.
 - **The installer is unsigned** — see above.
 - **No update mechanism.** New version, new installer.
 - **`dev:web` is not the app.** It exists so the interface can be worked on in a browser; its
@@ -202,7 +222,8 @@ src/
   keyboard/        the shortcut registry every tooltip and the overlay read
   styles/          tokens.css — the only file allowed to contain a colour
 scripts/           contract checker, icon, ffmpeg staging, keymap generation, media fixtures
-docs/              PLAN.md (implementation), EXPORT.md (the ffmpeg contract)
+docs/              PLAN.md (implementation), EXPORT.md (the ffmpeg contract),
+                   RENAME.md (renaming a source file on disk)
 ```
 
 `PRODUCT.md` and `DESIGN.md` at the root carry the design principles and the visual system. Read

@@ -162,7 +162,8 @@ export interface TimelineActions {
   zoomToFit(viewportPx: number): void;
   setScroll(x: number, y: number): void;
   setSnapEnabled(on: boolean): void;
-  addMarker(frame?: Frames, label?: string): MarkerId;
+  /** null when `frame` is not a finite number — the refusal `MarkerId` cannot express. */
+  addMarker(frame?: Frames, label?: string): MarkerId | null;
   removeMarker(id: MarkerId): void;
   /**
    * Called by mediaSlice.removeItem, by probe failure, and after every undo/redo/hydrate.
@@ -299,6 +300,19 @@ function pruneSelection(selection: Selection, clips: Record<ClipId, Clip>): Sele
   return dropped ? kept : selection;
 }
 
+/**
+ * A frame or duration argument that is safe to sanitize. PLAN §2.1: time is whole
+ * frames, always — and NaN is not one.
+ *
+ * Every clamp in this file is blind to it: `Math.max(0, NaN)` is NaN, `Math.round(NaN)`
+ * is NaN, and every comparison against NaN is false, so the overlap and source-bound
+ * checks below "succeed" and the clip lands in the store with geometry that poisons all
+ * duration arithmetic downstream. Sanitizing cannot fix a non-number, so the boundary
+ * refuses it — `out-of-range`, the same all-or-nothing refusal as start < 0 (§3.4 rule 1).
+ * The invariant is declared here, so it is enforced here rather than at each caller.
+ */
+const isFiniteFrames = (v: number | undefined): boolean => v === undefined || Number.isFinite(v);
+
 /** The media kind a clip carries. Falls back to its track when the media is gone. */
 export function clipKind(s: StoreState, clip: Clip): MediaKind {
   return s.items[clip.mediaId]?.kind ?? s.tracks[clip.trackId]?.kind ?? 'video';
@@ -363,6 +377,9 @@ export function planMove(
   deltaFrames: number,
   deltaTrackIndex: number,
 ): PlanResult {
+  if (!isFiniteFrames(deltaFrames)) {
+    return { ok: false, reason: 'out-of-range', blockingClipId: null };
+  }
   const moving: Clip[] = [];
   for (const id of ids) {
     const clip = s.clips[id];
@@ -417,6 +434,9 @@ export function planTrim(
   edge: 'in' | 'out',
   nextFrame: Frames,
 ): PlanResult {
+  if (!isFiniteFrames(nextFrame)) {
+    return { ok: false, reason: 'out-of-range', blockingClipId: null };
+  }
   const clip = s.clips[id];
   if (!clip) return { ok: false, reason: 'no-track', blockingClipId: null };
   const track = s.tracks[clip.trackId];
@@ -515,6 +535,13 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
     /* ------------------------------------------------------------- creation */
 
     addClip: (input) => {
+      if (
+        !isFiniteFrames(input.start) ||
+        !isFiniteFrames(input.duration) ||
+        !isFiniteFrames(input.mediaIn)
+      ) {
+        return { ok: false, reason: 'out-of-range' };
+      }
       const s = get();
       const media = s.items[input.mediaId];
       const track = s.tracks[input.trackId];
@@ -550,6 +577,7 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
     },
 
     insertMediaAt: (mediaId, start, preferredTrackId) => {
+      if (!isFiniteFrames(start)) return { ok: false, reason: 'out-of-range' };
       const s = get();
       const media = s.items[mediaId];
       if (!media) return { ok: false, reason: 'no-track' };
@@ -916,6 +944,7 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
     /* -------------------------------------------------------------- markers */
 
     addMarker: (frame, label) => {
+      if (!isFiniteFrames(frame)) return null;
       const s = get();
       const at = Math.max(0, Math.round(frame ?? s.playhead));
       const existing = Object.values(s.markers).find((m) => m.frame === at);

@@ -14,13 +14,22 @@ on a frame index rather than on a frame count, it was verified by rendering a ma
 identical timing numbers and reading back the per-frame luma, because a frame *count* cannot detect
 a one-frame placement error.
 
-**One honest limit on the fixtures.** `scripts/make-dev-media.mjs` builds every fixture's audio from
-`anullsrc`, so all nine files carry a real AAC stream whose content is digital silence. Audio claims
-below are therefore *structural* — which branches exist, which input index they read, where `adelay`
-puts them, what `amix` does to the sum — and were verified on a `sine` rig driven through the exact
-§1.7 chain, not by measuring the fixtures' levels. This distinction matters for a reason that bit an
-earlier draft of this document: **content silence is not `hasAudio === false`.** Every fixture,
-including the ones that sound like nothing, has an audio stream.
+**The fixtures can now be measured.** This paragraph used to record a limit: `make-dev-media.mjs`
+built every fixture's audio from `anullsrc`, so all nine files carried a real AAC stream whose
+content was digital silence, and the audio claims below could only be *structural* — which branches
+exist, which input index they read, where `adelay` puts them, what `amix` does to the sum — verified
+on a separate `sine` rig rather than on the fixtures themselves. That limit is gone. Every fixture
+now carries an audible signature (`scripts/make-dev-media.mjs` documents each one), and the levels
+below can be read straight back off a real export. A three-source `amix` of `interview_wide_a`
+(300 Hz), `drone_pass_02` (1100 Hz) and `music_bed_low` puts each tone at −24.6 dB in its own band —
+exactly the −15.05 dB source level less the 20·log₁₀(3) that `amix` averages away — and dropping one
+input collapses its band to −91 dB while the survivors rise by precisely 3.52 dB. Under the old
+fixtures every one of those numbers was −91, which is why a dropped or mis-weighted input could not
+be caught here.
+
+One thing the old paragraph got right is still worth keeping, because it bit an earlier draft of
+this document: **content silence is not `hasAudio === false`.** Every fixture has an audio stream,
+and a file that sounds like nothing still has one.
 
 **What replaces what.** `src/components/export/exportStub.ts` stops being reached the moment
 `getEditorAPI().export` is defined. The stub is not deleted — it remains the `dev:web` bridge, since

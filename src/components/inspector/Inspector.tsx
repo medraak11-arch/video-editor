@@ -20,6 +20,7 @@ import { useEditorStore } from '../../state/store';
 import type { Clip } from '../../types/model';
 import { ClipPropertyRow } from './ClipPropertyRow';
 import { InspectorGroup } from './InspectorGroup';
+import { NamePropertyRow } from './NamePropertyRow';
 import { ProjectProperties } from './ProjectProperties';
 
 /* Stored -> shown, and back. Declared at module scope so the identities stay
@@ -57,6 +58,13 @@ export function Inspector(): ReactElement {
           </InspectorGroup>
         ) : (
           <>
+            {/* Above Transform and outside every group: the file's name is the
+                one thing here that is not a property of the edit, and it is not
+                something to have to disclose to reach (RENAME.md §Inspector). */}
+            <div className="ve-inspector-identity">
+              <NamePropertyRow clips={clips} />
+            </div>
+
             <InspectorGroup id="transform" heading="Transform">
               <ClipPropertyRow
                 clips={clips}

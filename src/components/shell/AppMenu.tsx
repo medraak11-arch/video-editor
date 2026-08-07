@@ -79,6 +79,7 @@ export function AppMenu(): ReactElement {
         id: 'export',
         label: 'Export video',
         icon: <Upload size={14} strokeWidth={1.75} />,
+        shortcut: <ShortcutHint id="file.export" />,
         onSelect: () => setExportDialogOpen(true),
       },
       { kind: 'separator', id: 'sep-view' },

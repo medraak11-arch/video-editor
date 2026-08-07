@@ -1,9 +1,10 @@
 /* ---------------------------------------------------------------------------
    electron/ipc/media.ts — OWNER: media.
 
-   Two channels and nothing else (PLAN §8.12): CH.mediaPick and CH.mediaProbe,
-   plus the CH.mediaProbeProgress emitter that reports a probe's stages back to
-   the renderer.
+   Three channels and nothing else (PLAN §8.12, RENAME.md §IPC contract):
+   CH.mediaPick, CH.mediaProbe and CH.mediaRename, plus the
+   CH.mediaProbeProgress emitter that reports a probe's stages back to the
+   renderer.
 
    ffprobe / ffmpeg are resolved by electron/ffmpeg.ts — the bundled copy in a
    packaged build, PATH in development — and they are still NOT npm dependencies
@@ -28,11 +29,18 @@ import type { IpcMain, IpcMainInvokeEvent } from 'electron';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as FS_CONSTANTS } from 'node:fs';
-import { access, mkdir, rm, stat } from 'node:fs/promises';
+import { access, mkdir, rename as renameOnDisk, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import {
+  checkBaseName,
+  isCaseOnlyRename,
+  renamedFileName,
+  renamedPath,
+  splitMediaPath,
+} from '../../src/lib/filename';
 import { CH } from '../../src/types/api';
-import type { ProbeData, ProbeResult } from '../../src/types/api';
+import type { ProbeData, ProbeResult, RenameError, RenameResult } from '../../src/types/api';
 import type { MediaError, MediaKind } from '../../src/types/model';
 import { ffmpegCommand } from '../ffmpeg';
 
@@ -320,11 +328,136 @@ async function pickFiles(event: IpcMainInvokeEvent): Promise<string[]> {
   return result.canceled ? [] : result.filePaths;
 }
 
+/* ------------------------------------------------------------- renaming */
+
+/**
+ * The sentences the user reads. Fixed strings, chosen here: an errno, a raw
+ * filesystem message or a path never crosses the bridge (RENAME.md §IPC
+ * contract). 'file-in-use' is quoted verbatim from RENAME.md §The file-lock
+ * problem — it is the one message the spec pins, because it is the only one that
+ * tells the user what to actually do.
+ */
+const RENAME_MESSAGE = {
+  notFound: 'That file could not be found on disk',
+  nameTaken: 'A file with that name already exists in this folder',
+  permission: 'You do not have permission to rename that file',
+  fileInUse: 'Another program is using that file. Close it and try again.',
+  ioFailed: 'That file could not be renamed',
+} as const;
+
+const renameFail = (code: RenameError['code'], message: string): RenameResult => ({
+  ok: false,
+  error: { code, message },
+});
+
+/**
+ * errno -> taxonomy.
+ *
+ * EPERM is split by platform deliberately. On Windows a rename blocked by an
+ * open handle — the exact case RENAME.md §The file-lock problem is written
+ * about, a <video> element still holding the source — surfaces as EPERM, not
+ * EBUSY; EBUSY is what a directory in use gives. Reporting that as 'permission'
+ * would tell the user to change an ACL when what they need to do is close the
+ * other program. On POSIX, EPERM really is a permission failure and is reported
+ * as one.
+ */
+function renameErrnoResult(error: unknown): RenameResult {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  switch (code) {
+    case 'ENOENT':
+      return renameFail('not-found', RENAME_MESSAGE.notFound);
+    case 'EACCES':
+      return renameFail('permission', RENAME_MESSAGE.permission);
+    case 'EPERM':
+      return process.platform === 'win32'
+        ? renameFail('file-in-use', RENAME_MESSAGE.fileInUse)
+        : renameFail('permission', RENAME_MESSAGE.permission);
+    case 'EBUSY':
+    case 'ETXTBSY':
+      return renameFail('file-in-use', RENAME_MESSAGE.fileInUse);
+    default:
+      return renameFail('io-failed', RENAME_MESSAGE.ioFailed);
+  }
+}
+
+/** Existence only. A path that cannot be stat'd for any reason is not a collision. */
+async function exists(target: string): Promise<boolean> {
+  try {
+    await access(target, FS_CONSTANTS.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * RENAME.md §Validation, in the process that owns the filesystem. The renderer
+ * validates too, for feedback while typing, but this is the trust boundary and
+ * repeats every check through the SAME predicate (src/lib/filename.ts) so the
+ * two can never disagree about what a legal name is.
+ */
+async function renameMedia(rawPath: unknown, rawBaseName: unknown): Promise<RenameResult> {
+  if (typeof rawPath !== 'string' || rawPath.trim().length === 0) {
+    return renameFail('not-found', RENAME_MESSAGE.notFound);
+  }
+  if (typeof rawBaseName !== 'string') {
+    return renameFail('invalid-name', 'A file name cannot be empty');
+  }
+
+  const abs = path.resolve(rawPath);
+  const { base: currentBase, ext } = splitMediaPath(abs);
+
+  // Validate BEFORE any filesystem call: an illegal name must be refused without
+  // the disk having been touched at all (RENAME.md §Definition of done).
+  const check = checkBaseName(rawBaseName, abs);
+  if (!check.ok) return renameFail('invalid-name', check.message);
+
+  // Unchanged: succeed without touching the disk. Note this is an exact compare —
+  // a change of case only is a real rename and falls through.
+  if (rawBaseName === currentBase) {
+    return { ok: true, path: abs, url: mediaUrlForPath(abs), name: `${currentBase}${ext}` };
+  }
+
+  // Checked explicitly so a missing source reports 'not-found' rather than being
+  // mistaken for a collision by the check below.
+  try {
+    await access(abs, FS_CONSTANTS.F_OK);
+  } catch (error) {
+    return renameErrnoResult(error);
+  }
+
+  const target = renamedPath(abs, rawBaseName);
+
+  // NEVER overwrite. On Windows `access` is case-insensitive because the volume
+  // is, which is exactly the comparison the spec asks for — with one exception:
+  // for a case-only rename the file it finds IS the source, so the check is
+  // skipped and fs.rename is left to do what it does correctly on NTFS.
+  if (!isCaseOnlyRename(currentBase, rawBaseName) && (await exists(target))) {
+    return renameFail('name-taken', RENAME_MESSAGE.nameTaken);
+  }
+
+  try {
+    await renameOnDisk(abs, target);
+  } catch (error) {
+    return renameErrnoResult(error);
+  }
+
+  return {
+    ok: true,
+    path: target,
+    // The same builder the probe uses, so a renamed file's url is encoded
+    // identically to the one it replaces.
+    url: mediaUrlForPath(target),
+    name: renamedFileName(abs, rawBaseName),
+  };
+}
+
 /* ------------------------------------------------------------ registration */
 
 export function registerMediaIpc(ipcMain: IpcMain): void {
   ipcMain.removeHandler(CH.mediaPick);
   ipcMain.removeHandler(CH.mediaProbe);
+  ipcMain.removeHandler(CH.mediaRename);
 
   ipcMain.handle(CH.mediaPick, async (event): Promise<string[]> => {
     try {
@@ -345,4 +478,19 @@ export function registerMediaIpc(ipcMain: IpcMain): void {
       return fail('probe-failed', 'Reading this file failed unexpectedly');
     }
   });
+
+  ipcMain.handle(
+    CH.mediaRename,
+    async (_event, filePath: unknown, baseName: unknown): Promise<RenameResult> => {
+      try {
+        return await renameMedia(filePath, baseName);
+      } catch {
+        // renameMedia catches everything it expects; this is the guarantee that
+        // the invoke RESOLVES even when it does not, because a rejection here
+        // would surface in the renderer as a thrown Error with a main-process
+        // stack in it rather than as one of the six codes.
+        return renameFail('io-failed', RENAME_MESSAGE.ioFailed);
+      }
+    },
+  );
 }
