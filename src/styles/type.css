@@ -1,0 +1,66 @@
+/* ---------------------------------------------------------------------------
+   type.css — the six type utilities, and nothing else. PLAN §7.2.
+
+   They lived in base.css until the start-up splash needed them (docs/RELEASE.md
+   §3.6): the splash cannot import base.css, which paints `body` opaque and
+   would destroy the transparent rounded card, but it does need `.type-body`,
+   `.type-label` and `.type-numeric`. So the six moved here and base.css imports
+   this file. There is still exactly ONE definition of each class in the project,
+   and PLAN §7.2's "base.css ships six utility classes" stays true — through one
+   import.
+
+   Contains no colour literal and no colour at all: type is theme-invariant.
+--------------------------------------------------------------------------- */
+
+.type-headline {
+  font-family: var(--font-sans);
+  font-size: var(--type-headline-size);
+  font-weight: var(--type-headline-weight);
+  line-height: var(--type-headline-line);
+  letter-spacing: var(--type-headline-track);
+}
+
+.type-title {
+  font-family: var(--font-sans);
+  font-size: var(--type-title-size);
+  font-weight: var(--type-title-weight);
+  line-height: var(--type-title-line);
+  letter-spacing: var(--type-title-track);
+}
+
+.type-body {
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  line-height: var(--type-body-line);
+  letter-spacing: var(--type-body-track);
+}
+
+.type-label {
+  font-family: var(--font-sans);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+  letter-spacing: var(--type-label-track);
+}
+
+/* The Tabular Rule: every numeral that can change while the UI is live. */
+.type-numeric {
+  font-family: var(--font-mono);
+  font-size: var(--type-numeric-size);
+  font-weight: var(--type-numeric-weight);
+  line-height: var(--type-numeric-line);
+  letter-spacing: var(--type-numeric-track);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+.type-numeric-sm {
+  font-family: var(--font-mono);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-numeric-weight);
+  line-height: var(--type-numeric-line);
+  letter-spacing: var(--type-numeric-track);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}

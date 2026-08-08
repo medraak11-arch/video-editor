@@ -195,7 +195,7 @@ Identical structure, identical role names, fully verified.
 
 **The Only Color Rule.** The footage is the most saturated thing on screen at all times. Interface chroma never exceeds 0.018 outside of `accent`, `danger`, and `warning`. If a surface needs emphasis, it moves along the lightness ramp — it does not gain chroma.
 
-**The Three Uses Rule.** The accent appears on the playhead, the current selection, and the one primary action. A fourth use is a bug. This governs rendered interface surfaces only; the OS application icon and the `.veproj` document icon are specified in docs/ICON.md §2. When everything is accented, the selection is invisible, and the selection is the single most important piece of state in an editor.
+**The Three Uses Rule.** The accent appears on the playhead, the current selection, and the one primary action. A fourth use is a bug. This governs rendered interface surfaces only; the OS application icon and the `.veproj` document icon are specified in docs/ICON.md §2, as is the application mark's reproduction at identity scale (≤ 32 px), which appears in exactly one rendered surface: the start-up splash (docs/RELEASE.md §3.8). When everything is accented, the selection is invisible, and the selection is the single most important piece of state in an editor.
 
 **The Lightness-First Rule.** Status roles separate by lightness before hue. This is measured, not stylistic: with hue-led separation, `danger`/`success` collapsed to ΔE 0.07 and `warning`/`success` to ΔE 0.04 under simulated deuteranopia. Lightness survives every deficiency type; hue does not. Every status pair now holds ΔE ≥ 0.10 under normal, deuteranopic, protanopic and tritanopic simulation.
 
@@ -301,7 +301,7 @@ The signature component.
 
 ### Motion
 
-Every component transitions at **150–250ms**; state feedback (hover, focus, toggle) runs at **120ms**. Easing is `ease-out` exponential — `cubic-bezier(0.22, 1, 0.36, 1)`. No bounce, no elastic, no orchestrated load sequence: the app opens directly into the task.
+Every component transitions at **150–250ms**; state feedback (hover, focus, toggle) runs at **120ms**. Easing is `ease-out` exponential — `cubic-bezier(0.22, 1, 0.36, 1)`. No bounce, no elastic, no orchestrated load sequence: the app opens directly into the task. The start-up splash is not an exception to this — it does not animate at all, and on a launch fast enough to open directly into the task it is never shown. See docs/RELEASE.md §3.
 
 The timeline is the exception that earns weight. Scrubbing carries momentum, clip drag has inertia, and snapping is magnetic with a tactile settle over roughly 90ms. This is the one surface where motion is direct-manipulation feedback rather than decoration, and it is the difference between an editor that feels like software and one that feels like an instrument.
 
@@ -336,4 +336,6 @@ Under `prefers-reduced-motion: reduce`, every transition becomes an instant stat
 - **Don't** let a theme change anything but color. Spacing, radius, type, and timing are theme-invariant.
 - **Don't** encode clip type, track state, or selection with hue alone — it fails under deuteranopia, which is measured and non-negotiable here.
 - **Don't** exceed weight 600 or introduce a second sans family.
-- **Don't** animate an entrance sequence on launch. The app opens into the task.
+- **Don't** animate an entrance sequence on launch. The app opens into the task. The start-up
+  splash carries no transition, no animation and no `@keyframes` — a gate asserts it
+  (docs/RELEASE.md §3.11) — and it is never held open for effect.

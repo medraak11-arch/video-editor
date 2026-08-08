@@ -36,6 +36,17 @@ export const CH = {
   autosaveRecoverable: 'autosave:recoverable', // renderer -> main, invoke
   autosaveRetire: 'autosave:retire', // renderer -> main, invoke
   autosaveResolve: 'autosave:resolve-offer', // renderer -> main, invoke
+  // RELEASE.md §1.11 — auto-update. Registered only when a feed is configured.
+  updateCurrent: 'update:current', // renderer -> main, invoke
+  updatePhase: 'update:phase', // main -> renderer, send
+  updateCheck: 'update:check', // renderer -> main, send
+  updateDownload: 'update:download', // renderer -> main, send
+  updateCancel: 'update:cancel', // renderer -> main, send
+  updateInstall: 'update:install', // renderer -> main, send
+  updateDismiss: 'update:dismiss', // renderer -> main, send
+  // RELEASE.md §3.10 — the start-up splash. Its own window, its own preload.
+  splashStatus: 'splash:status', // main -> splash, send
+  splashReady: 'splash:ready', // splash -> main, send
 } as const;
 
 export type ChannelName = (typeof CH)[keyof typeof CH];
@@ -321,8 +332,98 @@ export interface RecoveryOffer {
   project: ProjectFile;
 }
 
+/* ---- the build, and what a bug report needs — RELEASE.md §2.2 ----------- */
+
+/** Everything a bug report needs, computed once in main, delivered synchronously. */
+export interface AppBuild {
+  /** package.json "version" via app.getVersion(). Semver, no leading 'v'. */
+  version: string;
+  /** process.versions.electron */
+  electron: string;
+  /** process.versions.chrome */
+  chromium: string;
+  /** os.release() — '10.0.26200' on win32. */
+  os: string;
+  /** process.arch — 'x64'. */
+  arch: string;
+  /** app.isPackaged. False under `npm run dev`; the fixture bridge reports false too. */
+  packaged: boolean;
+}
+
+/* ---- auto-update — RELEASE.md §1.11 ------------------------------------- */
+
+/**
+ * One state machine, pushed whole on every transition. A discriminated union
+ * rather than a phase plus optional fields, for the same reason ExportRequest's
+ * codec is one widened union: the alternative admits illegal combinations that
+ * every consumer then has to reject.
+ *
+ * NO manual/automatic discriminator, DELIBERATELY. `checking`, `current` and
+ * `failed` are pushed ONLY for a check the user started; an automatic check that
+ * finds nothing or fails pushes nothing at all and leaves the phase where it was
+ * (RELEASE.md §1.5). The distinction lives in the transport rather than in the
+ * type, so there is no field a consumer can forget to branch on. The only phase
+ * an automatic check can push is `available`.
+ */
+export type UpdatePhase =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'current'; version: string }
+  | { kind: 'available'; version: string; notesUrl: string | null }
+  | { kind: 'downloading'; version: string; percent: number } // 0..100, integer
+  | { kind: 'ready'; version: string; notesUrl: string | null }
+  | { kind: 'failed'; at: 'check' | 'download'; message: string; retryable: boolean };
+
+export interface UpdateBridge {
+  /** Pushed on every transition. Returns its own unsubscribe. */
+  onPhase(cb: (p: UpdatePhase) => void): () => void;
+  /** The phase right now, so the strip renders correctly on its first paint
+   *  rather than after the next transition. */
+  current(): Promise<UpdatePhase>;
+  /** Manual check. Never throws; failures arrive as a 'failed' phase. */
+  check(): void;
+  download(): void;
+  /** Cancels the in-flight download through the CancellationToken main is
+   *  holding (§1.5) — there is no other way to stop electron-updater. Returns
+   *  the phase to 'available', not 'idle': the update is still available, the
+   *  Download button must stay pressable, and the row keeps its height. */
+  cancelDownload(): void;
+  /** Routes through electron/main.ts's requestInstallAndRestart — §1.8. */
+  installAndRestart(): void;
+  /** 'Not now' / 'Later' / 'Dismiss'. Returns the phase to 'idle' for THIS
+   *  SESSION only; a downloaded update is not deleted and is offered again on
+   *  the next launch. */
+  dismiss(): void;
+}
+
+/* ---- the splash — RELEASE.md §3.10 -------------------------------------- */
+
+/** What main pushes to the splash. `label: null` means draw nothing at all. */
+export interface SplashStatus {
+  label: string | null;
+  /** Phases settled so far. */
+  done: number;
+  /** Phases this launch will run. Fixed before the splash can be shown (§3.4). */
+  total: number;
+}
+
+/** Exposed on the SPLASH window only, by electron/splash-preload.ts.
+ *  It is deliberately NOT part of EditorAPI: the splash gets the smallest
+ *  surface that does its job, and the editor's bridge has no business being
+ *  reachable from a window with no user in it. */
+export interface SplashAPI {
+  build: AppBuild;
+  onStatus(cb: (s: SplashStatus) => void): () => void;
+  /** The splash telling main it has painted and its fonts have settled (§3.7).
+   *  This is condition 2 of §3.4's show rule — not the splash window's own
+   *  ready-to-show, which is only that condition's timed fallback. */
+  ready(): void;
+}
+
 export interface EditorAPI {
   platform: 'win32' | 'darwin' | 'linux';
+  /** Constant for the life of the process. Never a promise — see RELEASE.md §2.2. */
+  build: AppBuild;
   window: {
     minimize(): void;
     maximizeToggle(): void;
@@ -413,10 +514,19 @@ export interface EditorAPI {
    * where ExportDialog falls back to exportStub.
    */
   export?: ExportBridge;
+  /**
+   * PRESENT only when a feed is configured (RELEASE.md §1.3). Absent under
+   * dev:web and in every build that ships without a publish target — which is
+   * how it ships today. Every call site feature-detects. How preload decides is
+   * RELEASE.md §1.11: main carries the answer in `additionalArguments`.
+   */
+  update?: UpdateBridge;
 }
 
 declare global {
   interface Window {
     editorAPI?: EditorAPI;
+    /** The splash window only. Absent in the editor window and under dev:web. */
+    splashAPI?: SplashAPI;
   }
 }

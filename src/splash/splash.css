@@ -1,0 +1,228 @@
+/* ---------------------------------------------------------------------------
+   splash.css — every rule the start-up splash needs. docs/RELEASE.md §3.
+
+   THERE IS NO MOTION IN THIS FILE, and that is a gate rather than a promise:
+   scripts/check-release.mjs strips comments and then asserts that no
+   declaration here begins `transition` or `animation` and that the file
+   declares no @keyframes. Under prefers-reduced-motion nothing differs, because
+   there is nothing to reduce — which is the strongest form the requirement can
+   take (§3.11). The gate strips comments first precisely so this paragraph does
+   not fail the build that it exists to explain.
+
+   NO ACCENT. The 28px mark is the splash's only hue and it is drawn in
+   src/splash/graphic.ts, the one path scripts/check-contract.mjs allows. If
+   this file ever names --accent, the build stops, and that is the property
+   worth keeping.
+
+   Nothing from base.css reaches this window. The card IS the splash; the window
+   around it must stay see-through or §3.5's rounded corners paint black.
+--------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+}
+
+body {
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+  color: var(--text-on-well);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------------ the card
+   One plane, edge to edge, because the splash IS the well: the surround behind
+   the frame, and the frame is what is lit. 10px is the largest radius in the
+   system; a bigger corner would be a geometry value that exists nowhere else.
+   The keyline, not a shadow, is what separates the card from an unknown
+   desktop — §3.5 explains why a native shadow on a transparent frameless
+   window is not usable here.                                                */
+
+.ve-splash {
+  --splash-pad: 32px;
+  --splash-gap: 56px;
+  --splash-col: 384px;
+
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--splash-col) minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--border-structural);
+  border-radius: var(--radius-lg);
+  background: var(--surface-well);
+}
+
+/* --------------------------------------------------------------- left column
+   The 1px rule at the column boundary is the same carrier PLAN §7.5 mandates
+   for every major-region boundary in the app, used here for the same job.    */
+
+.ve-splash-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--splash-pad);
+  border-right: 1px solid var(--border-structural);
+}
+
+.ve-splash-mark {
+  display: block;
+  flex: 0 0 auto;
+  margin-bottom: var(--splash-gap);
+}
+
+/* Rows 2–3 sit in a fixed block, so a late font substitution changes metrics
+   inside a box that does not move and nothing below it shifts (§3.7). */
+.ve-splash-wordmark {
+  flex: 0 0 auto;
+  height: 92px;
+  margin: 0;
+  font-size: var(--type-wordmark-size);
+  line-height: var(--type-wordmark-line);
+  letter-spacing: var(--type-wordmark-track);
+  color: var(--text-on-well);
+}
+
+.ve-splash-wordmark-light {
+  display: block;
+  font-weight: 400;
+}
+
+.ve-splash-wordmark-bold {
+  display: block;
+  font-weight: 600;
+}
+
+.ve-splash-tagline {
+  flex: 0 0 auto;
+  margin-top: 20px;
+}
+
+.ve-splash-tagline-lead {
+  font-weight: 600;
+  color: var(--text-on-well);
+}
+
+.ve-splash-tagline-rest {
+  color: var(--text-on-well-muted);
+}
+
+.ve-splash-spacer {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------- status block
+   The height is reserved UNCONDITIONALLY. The status line appears 400ms into a
+   phase; if this block collapsed when empty, the footer and the wordmark would
+   move at that instant, and a splash whose layout twitches while you look at it
+   is worse than one with no status at all (§3.7 row 6).                      */
+
+.ve-splash-status {
+  flex: 0 0 auto;
+  height: 34px;
+}
+
+.ve-splash-status-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+/* A bullet that says "this line is a status", not an animation. Filled, no
+   ring, no pulse; the reference's dot is amber and this one is not, because
+   the accent budget is closed. */
+.ve-splash-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-on-well-muted);
+}
+
+.ve-splash-status-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-on-well);
+}
+
+/* A step counter, not a sweep: `done / total`, discrete, jumping from 1/3 to
+   2/3 with nothing in between. --border-hairline is the decorative region
+   marker PLAN §7.5 names, and this is the one place the sub-3:1 hairline is
+   correct — the fill above it carries the meaning. */
+.ve-splash-rule {
+  margin-top: 12px;
+  height: 1px;
+  background: var(--border-hairline);
+}
+
+.ve-splash-rule-fill {
+  height: 1px;
+  background: var(--text-on-well-muted);
+}
+
+/* --------------------------------------------------------------- the footer */
+
+.ve-splash-footer {
+  flex: 0 0 auto;
+  margin-top: 24px;
+  color: var(--text-on-well-muted);
+}
+
+.ve-splash-version {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  margin-top: 2px;
+}
+
+/* -------------------------------------------------------------- right column
+   The bench bleeds to the card's top, right and bottom edges and is clipped by
+   the card's own overflow. */
+
+.ve-splash-right {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ve-splash-bench {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------- the proof view
+   Dev only, ?proof — §3.14 gate 1. Two copies of the bench alone, 1x and 2x,
+   for a screenshot that answers exactly two questions: does the cut read as one
+   continuous channel, and is the lit clip unmistakably the only lit thing. */
+
+.ve-splash-proof {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--splash-gap, 56px);
+  padding: 32px;
+  background: var(--surface-well);
+}
+
+.ve-splash-proof-1x {
+  width: 575px;
+  height: 560px;
+  flex: 0 0 auto;
+}
+
+.ve-splash-proof-2x {
+  width: 1150px;
+  height: 1120px;
+  flex: 0 0 auto;
+}

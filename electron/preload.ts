@@ -3,7 +3,11 @@
 
    The ONLY module permitted to call webUtils. No logic, no fs, no
    child_process: every member is a one-line ipcRenderer.invoke / .send, or an
-   .on wrapper that returns its own unsubscribe.
+   .on wrapper that returns its own unsubscribe — with one stated exception,
+   the argv-derived constants. `readBuild()` and the `--ve-update=1` switch read
+   values main put in this process's own argv at window creation, which is what
+   lets the version and the update capability be synchronous facts rather than
+   an IPC round trip during preload (RELEASE.md §2.2, §1.11).
 
    Emits as CommonJS. With contextIsolation:true and sandbox:false, Electron
    loads the preload as CJS; an ESM preload fails silently, leaving
@@ -15,6 +19,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import { CH } from '../src/types/api';
 import type {
+  AppBuild,
   AutosavePayload,
   AutosaveWriteResult,
   CloseSaveOutcome,
@@ -29,6 +34,7 @@ import type {
   RecoveryOffer,
   RenameResult,
   SaveResult,
+  UpdatePhase,
 } from '../src/types/api';
 import type { ProjectFile } from '../src/types/model';
 
@@ -43,8 +49,32 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
 
 const platform = process.platform as EditorAPI['platform'];
 
+const BUILD_ARG = '--ve-build=';
+const UPDATE_ARG = '--ve-update=1';
+
+/** Never throws. A malformed argument yields a build whose every field is
+ *  'unknown', which is a visible, reportable state rather than a crash during
+ *  preload — RELEASE.md §2.2. */
+function readBuild(): AppBuild {
+  const raw = process.argv.find((a) => a.startsWith(BUILD_ARG));
+  try {
+    if (raw) return JSON.parse(decodeURIComponent(raw.slice(BUILD_ARG.length))) as AppBuild;
+  } catch {
+    /* fall through */
+  }
+  return {
+    version: 'unknown',
+    electron: 'unknown',
+    chromium: 'unknown',
+    os: 'unknown',
+    arch: 'unknown',
+    packaged: false,
+  };
+}
+
 const api: EditorAPI = {
   platform,
+  build: readBuild(),
 
   window: {
     minimize: () => ipcRenderer.send(CH.windowMinimize),
@@ -113,5 +143,23 @@ const api: EditorAPI = {
     onProgress: (cb) => subscribe<ExportProgressEvent>(CH.exportProgress, cb),
   },
 };
+
+// The one CONDITIONAL member in this file. `media.reveal` and `export` are
+// absent only under dev:web, where there is no preload at all — a whole-bridge
+// condition. This one is per-build: main decided it with updateFeedConfigured()
+// and carried the answer here in argv, because preload has no fs and must not
+// round-trip for a constant. A build with no feed never gets the member, so
+// `getEditorAPI().update` is undefined and both §1.6 surfaces vanish.
+if (process.argv.includes(UPDATE_ARG)) {
+  api.update = {
+    onPhase: (cb) => subscribe<UpdatePhase>(CH.updatePhase, cb),
+    current: () => ipcRenderer.invoke(CH.updateCurrent) as Promise<UpdatePhase>,
+    check: () => ipcRenderer.send(CH.updateCheck),
+    download: () => ipcRenderer.send(CH.updateDownload),
+    cancelDownload: () => ipcRenderer.send(CH.updateCancel),
+    installAndRestart: () => ipcRenderer.send(CH.updateInstall),
+    dismiss: () => ipcRenderer.send(CH.updateDismiss),
+  };
+}
 
 contextBridge.exposeInMainWorld('editorAPI', api);

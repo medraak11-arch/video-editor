@@ -27,6 +27,7 @@ import { Button, IconButton, InlineNotice } from '../ui';
 import { useEditorStore } from '../../state/store';
 import { discardRecovery, restoreRecovery } from '../../keyboard/projectActions';
 import { AppMenu } from './AppMenu';
+import { UpdateStrip } from './UpdateStrip';
 import { WindowControls } from './WindowControls';
 
 /** '14:32' in the viewer's own locale. */
@@ -148,6 +149,11 @@ export function TitleBar(): ReactElement {
           </div>
         </section>
       ) : null}
+
+      {/* Below the recovery strip, above the notice strip. It draws nothing at
+          all unless a feed is configured, and it decides for itself when a 32px
+          row may appear or disappear — RELEASE.md §1.7. */}
+      <UpdateStrip />
 
       {notice ? (
         <div className="shell-titlebar-notice">

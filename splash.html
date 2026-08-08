@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en" data-theme="signal">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Replaced by the ve-splash-csp plugin in vite.config.ts. The PRODUCTION
+         policy is the one that ships and the one the gates read out of
+         dist/splash.html; the dev policy is looser only because
+         @vitejs/plugin-react injects an inline preamble into every HTML entry
+         and Vite's client opens an HMR socket. docs/RELEASE.md §3.6. -->
+    <meta http-equiv="Content-Security-Policy" content="%VE_SPLASH_CSP%" />
+    <title>Video Editor</title>
+  </head>
+  <body>
+    <div id="splash"></div>
+    <script type="module" src="/src/splash/splash.ts"></script>
+  </body>
+</html>

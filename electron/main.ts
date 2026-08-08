@@ -13,10 +13,11 @@
 
 import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { CH } from '../src/types/api';
-import type { CloseSaveResolution, ProjectStateReport } from '../src/types/api';
+import type { AppBuild, CloseSaveResolution, ProjectStateReport } from '../src/types/api';
 import { describeFfmpegResolution } from './ffmpeg';
 import { registerExportIpc } from './ipc/export';
 import { registerMediaIpc } from './ipc/media';
@@ -28,9 +29,41 @@ import {
   registerProjectIpc,
   retireAutosaveSync,
   unsavedQuestion,
+  whenRecoveryScanSettled,
 } from './ipc/project';
+import { beginPhase, closeSplash, createSplash, endPhase } from './splash';
+import { registerUpdate, runUpdateInstaller, updateFeedConfigured } from './update';
 
 const MIN_WINDOW = { width: 1024, height: 640 };
+
+/* ------------------------------------------------ the build payload (§2.2)
+   The renderer cannot read package.json: nodeIntegration is false and the file
+   is inside an asar. sendSync blocks preload for a constant; invoke arrives a
+   tick after the menu has already rendered an empty version. So main puts the
+   value in the renderer's own argv at window creation and preload reads it off
+   process.argv with no IPC at all.
+
+   encodeURIComponent is not decoration: the JSON carries quotes and braces, and
+   it is what guarantees the value contains no whitespace, which is what makes
+   argv.find(startsWith) safe. Exported for electron/splash.ts, which builds the
+   same payload for the splash window.                                        */
+
+export const BUILD_ARG = '--ve-build=';
+/** Set only when a feed is configured, and it is what preload hangs the
+ *  conditional `update` member on (§1.11). Deliberately NOT a field on
+ *  AppBuild: every one of that struct's six fields is rendered by the
+ *  diagnostic block, and a seventh that is never rendered would be the first
+ *  thing in it that is not what the struct says it is. */
+const UPDATE_ARG = '--ve-update=1';
+
+export const appBuild = (): AppBuild => ({
+  version: app.getVersion(),
+  electron: process.versions.electron,
+  chromium: process.versions.chrome,
+  os: os.release(),
+  arch: process.arch,
+  packaged: app.isPackaged,
+});
 
 /** The one URL builder. Stated once so main and electron/ipc/media.ts cannot drift. */
 export const mediaUrlForPath = (abs: string): string =>
@@ -255,6 +288,11 @@ interface CloseApproval {
   reissueQuit: boolean;
   /** Delete this session's snapshot. FALSE on every 'abandon'. */
   retireSnapshot: boolean;
+  /** Hand off to the update installer after the window has gone. Set only from
+   *  RELEASE.md §1.8. OPTIONAL, so the three existing call sites — the two
+   *  resolveCloseIntent entries and handleSessionEnd's direct call — compile
+   *  unchanged and mean exactly what they meant before: no install. */
+  installUpdate?: boolean;
 }
 
 /**
@@ -264,6 +302,16 @@ interface CloseApproval {
  * closes instantly with no prompt.
  */
 function approveAndClose(win: BrowserWindow, a: CloseApproval): void {
+  // Entered TWICE for the same window on one real path: WM_ENDSESSION arrives
+  // while a decision is in flight, handleSessionEnd calls this directly, and
+  // the still-pending resolveCloseIntent later resumes and calls it again. The
+  // existing code survived that only because every remaining branch is
+  // isDestroyed()-guarded — which stopped being true the moment the install
+  // line below was added. It also fixes a second-order bug that existed
+  // before it: on that path the resumed go(true) would call
+  // retireAutosaveSync() and delete the snapshot the shutdown deliberately
+  // kept. First call wins.
+  if (closeApproved.has(win)) return;
   closeApproved.add(win);
   quitApproved = true;
   try {
@@ -275,11 +323,14 @@ function approveAndClose(win: BrowserWindow, a: CloseApproval): void {
   }
   if (!win.isDestroyed()) win.close();
   if (a.reissueQuit) app.quit();
+  // LAST, after the window is gone, and never during a shutdown: a shutdown is
+  // not consent to install (RELEASE.md §1.8).
+  if (a.installUpdate && !sessionEnding) runUpdateInstaller();
 }
 
 async function resolveCloseIntent(
   win: BrowserWindow,
-  entry: { reissueQuit: boolean },
+  entry: { reissueQuit: boolean; installUpdate?: boolean },
 ): Promise<void> {
   if (!beginDecision()) return; // the open guard, or a previous close, owns the dialog
   try {
@@ -312,6 +363,28 @@ async function resolveCloseIntent(
   } finally {
     endDecision();
   }
+}
+
+/**
+ * The ONLY sanctioned way to leave this application for an install
+ * (RELEASE.md §1.8). Ask first, install second — always.
+ *
+ * The obvious implementation, `autoUpdater.quitAndInstall()` plus a trust that
+ * `before-quit` catches it, fails destructively: on win32 NsisUpdater SPAWNS
+ * THE INSTALLER FIRST and then calls app.quit(), so a preventDefault() that
+ * raises the unsaved-changes dialog is raising it over a running installer.
+ * Cancel does not un-spawn an installer.
+ *
+ * The `sessionEnding` line is first, not last: it is the one branch here that
+ * reaches runUpdateInstaller() without passing through approveAndClose, so it
+ * needs its own copy of the rule.
+ */
+export function requestInstallAndRestart(): void {
+  if (sessionEnding) return;
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return runUpdateInstaller(); // nothing to ask
+  if (isDecisionInFlight()) return; // a dialog owns the screen
+  void resolveCloseIntent(win, { reissueQuit: false, installUpdate: true });
 }
 
 function registerCloseGuard(): void {
@@ -393,11 +466,30 @@ function createWindow(): BrowserWindow {
       sandbox: false,
       webSecurity: true,
       spellcheck: false,
+      // Two switches, two meanings, one mechanism (§2.2, §1.11). The splash
+      // window gets the build payload and NOT the update switch: it has no
+      // EditorAPI and nothing to update.
+      additionalArguments: [
+        `${BUILD_ARG}${encodeURIComponent(JSON.stringify(appBuild()))}`,
+        ...(updateFeedConfigured() ? [UPDATE_ARG] : []),
+      ],
     },
   });
 
-  // The app opens directly into the task: no entrance sequence, no flash.
-  win.once('ready-to-show', () => win.show());
+  // The app opens directly into the task: no entrance sequence, no flash. The
+  // splash (RELEASE.md §3) is not an exception — it is destroyed here, BEFORE
+  // show(), so the two are never on screen together, and on a launch fast
+  // enough to reach this line early it was never composited at all.
+  win.once('ready-to-show', () => {
+    endPhase('editor');
+    closeSplash();
+    win.show();
+  });
+
+  // The splash is a BrowserWindow, so a splash still alive when the main window
+  // goes would stop 'window-all-closed' from firing and leave the process up
+  // with an invisible window and no way back.
+  win.webContents.on('render-process-gone', () => closeSplash());
 
   const notifyMaximized = () => {
     if (!win.isDestroyed()) win.webContents.send(CH.windowMaxChanged, win.isMaximized());
@@ -418,6 +510,9 @@ function createWindow(): BrowserWindow {
   });
 
   win.on('closed', () => {
+    // Inside the handler, so both windows are gone by the time it returns and
+    // 'window-all-closed' fires normally (RELEASE.md §3.4).
+    closeSplash();
     if (mainWindow === win) mainWindow = null;
   });
 
@@ -560,27 +655,51 @@ if (!gotLock) {
       }
     });
 
+    // Computed ONCE, before createWindow(), because the splash needs it for the
+    // `editor` phase's label and the existing requestOpen call needs the same
+    // value. One reordered line, and it makes the splash say something specific
+    // and true on the launch where the user most wants to know what is going on.
+    const launchProject = veprojFromArgv(process.argv);
+    createSplash(launchProject === null ? null : path.basename(launchProject));
+
+    // Three phases, always three, so the denominator is honest. Every one of
+    // them is real work that already existed; beginPhase/endPhase are no-ops
+    // when no splash is up, so nothing below branches on whether there is one.
+    beginPhase('ffmpeg');
     // The one startup line worth having. A packaged build has no terminal, so
     // when someone reports "it cannot read my files" this is where the answer is.
     console.log(`[ffmpeg] ${describeFfmpegResolution()}`);
+    endPhase('ffmpeg');
 
     registerWindowIpc();
     registerMediaIpc(ipcMain);
+    beginPhase('recovery');
     registerProjectIpc(ipcMain);
+    void whenRecoveryScanSettled().then(() => endPhase('recovery'));
     // Before registerExportIpc: its killEverythingSync is also a before-quit
     // listener, and EventEmitter runs every listener regardless of
     // preventDefault(), so ours has to be listener 0 (SAFETY §1.8).
     registerCloseGuard();
     registerExportIpc(ipcMain);
+    // After registerExportIpc and BEFORE createWindow(), which needs
+    // updateFeedConfigured()'s memoised answer to decide whether preload gets
+    // an `update` member (RELEASE.md §1.3, §1.11).
+    registerUpdate(ipcMain);
 
+    beginPhase('editor');
     mainWindow = createWindow();
     // win32/linux only; on darwin this is null and `open-file` has already run.
-    requestOpen(veprojFromArgv(process.argv));
+    requestOpen(launchProject);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
     });
   });
+
+  // The splash must never outlive anything, and a quit is one of the six ways
+  // out (RELEASE.md §3.4). It never calls preventDefault(), so it does not
+  // disturb the ordering registerCloseGuard depends on.
+  app.on('before-quit', () => closeSplash());
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();

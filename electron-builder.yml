@@ -8,6 +8,36 @@
 # Build it with `npm run dist`. Output lands in dist-release/.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# UPDATE FEED — the one place the update endpoint is configured.
+#
+# This key is what electron-builder turns into resources/app-update.yml, which
+# is the only thing electron-updater reads at runtime. docs/RELEASE.md §1.2.
+#
+# `null` is not "unset": it is an EXPLICIT instruction not to publish, and it is
+# load-bearing. With NO publish key at all, electron-builder infers a GitHub
+# provider from the git remote (or from package.json "repository") and writes an
+# app-update.yml pointing at a repository that may not exist. The app would then
+# have a feed nobody configured. Removing this line is a bug; changing it is the
+# release decision.
+#
+# To ship updates, replace `null` with ONE of the two blocks below and read
+# docs/RELEASE.md §1.10 before the first publish.
+#
+#   publish:
+#     - provider: github
+#       owner: <github-user-or-org>
+#       repo: video-editor
+#       releaseType: release        # not 'draft'; a draft release is invisible
+#                                   # to the updater and looks like "no update"
+#
+#   publish:
+#     - provider: generic
+#       url: https://updates.example.com/video-editor/   # HTTPS ONLY — §1.9
+#       channel: latest
+# ---------------------------------------------------------------------------
+publish: null
+
 appId: dev.local.videoeditor
 productName: Video Editor
 copyright: © 2026
@@ -17,14 +47,42 @@ directories:
   buildResources: build
 
 # The renderer is a Vite bundle and the main process is tsc output; every runtime
-# dependency is already inside dist/. Nothing in electron/ imports a package —
-# only 'electron' itself and node builtins — so node_modules is 240 MB of
-# nothing and is excluded outright.
+# dependency of the RENDERER is already inside dist/, so node_modules is
+# excluded outright — with exactly one exception.
+#
+# electron-updater is a main-process dependency (docs/RELEASE.md §1.11) and it
+# is `require`d, lazily, from electron/update.ts. '!node_modules/**' excludes
+# everything not explicitly re-included, so a list that named electron-updater
+# and stopped would produce an asar containing it and none of its dependency
+# graph, and the first require would throw `Cannot find module 'fs-extra'` in
+# main, at the moment the user pressed a button, with no UI path to report it.
+# A partial list is worse than no feature, so the list is the full closure.
 files:
   - dist/**
   - dist-electron/**
   - package.json
   - '!node_modules/**'
+  # electron-updater's COMPLETE production closure — 16 packages, sorted,
+  # machine-generated. Regenerate with:
+  #     node scripts/check-release.mjs --write-deps
+  # Never hand-edit: scripts/check-release.mjs re-resolves it and fails the
+  # build on any difference (docs/RELEASE.md §1.11, §1.12 gate 1.5).
+  - 'node_modules/argparse/**'
+  - 'node_modules/builder-util-runtime/**'
+  - 'node_modules/debug/**'
+  - 'node_modules/electron-updater/**'
+  - 'node_modules/fs-extra/**'
+  - 'node_modules/graceful-fs/**'
+  - 'node_modules/js-yaml/**'
+  - 'node_modules/jsonfile/**'
+  - 'node_modules/lazy-val/**'
+  - 'node_modules/lodash.escaperegexp/**'
+  - 'node_modules/lodash.isequal/**'
+  - 'node_modules/ms/**'
+  - 'node_modules/sax/**'
+  - 'node_modules/semver/**'
+  - 'node_modules/tiny-typed-emitter/**'
+  - 'node_modules/universalify/**'
   - '!**/*.map'
 
 # ffmpeg and ffprobe, staged by scripts/stage-ffmpeg.mjs. This lands at

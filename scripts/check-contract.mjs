@@ -67,8 +67,15 @@ for (const [, , theme, body] of blocks) {
 }
 
 // ---------------------------------------------------------------- per file
+// Four directories and ONE FILE. The file is the start-up splash's 28px mark,
+// which is the taskbar icon reproduced at identity scale — DESIGN.md's Three
+// Uses Rule and PLAN §7.4 both carry the scoping clause, and this is the
+// machine that enforces it. Deliberately the file and not the directory:
+// src/splash/splash.css still fails this gate if it so much as names the
+// accent, which is the property worth keeping. docs/RELEASE.md §1.12 gate 2.
 const ACCENT_ALLOWED = [
   'components/timeline/', 'components/ui/', 'styles/', 'components/export/',
+  'splash/graphic.ts',
 ];
 
 for (const f of files) {

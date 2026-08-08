@@ -163,6 +163,14 @@
   --type-numeric-line: 1.2;
   --type-numeric-track: normal;
 
+  /* The splash wordmark, and nothing else. docs/RELEASE.md §3.7.
+     Identity typography, not UI typography: the scale above tops out at 18px
+     because it is scaled for a dense instrument. There is deliberately no
+     .type-wordmark utility — one rule in src/splash/splash.css reads these. */
+  --type-wordmark-size: 44px;
+  --type-wordmark-line: 1.05;
+  --type-wordmark-track: -0.02em;
+
   /* ======================================== 7.3 Radius, space, motion, layout */
   --radius-clip: 3px;
   --radius-sm: 4px;

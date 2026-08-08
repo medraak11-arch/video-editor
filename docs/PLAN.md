@@ -1914,9 +1914,19 @@ and would have shipped unverified. The titlebar overflow `Menu` (shell-owned) ca
 --type-body-size     13px  --type-body-weight     400  --type-body-line     1.45  --type-body-track     normal
 --type-label-size    11px  --type-label-weight    500  --type-label-line    1.3   --type-label-track    0.005em
 --type-numeric-size  12px  --type-numeric-weight  400  --type-numeric-line  1.2   --type-numeric-track  normal
+
+--type-wordmark-size 44px  --type-wordmark-line 1.05  --type-wordmark-track -0.02em
 ```
 
-`base.css` ships six utility classes; **use these rather than re-declaring the properties**:
+> Identity typography, not UI typography: the type scale tops out at 18 px because it is scaled for a
+> dense instrument. These three are used by exactly one surface — the start-up splash's wordmark
+> (docs/RELEASE.md §3.7) — and by nothing in the editor. There is no `.type-wordmark` utility class,
+> deliberately: one rule in `src/splash/splash.css` reads them, and a seventh utility in `base.css`
+> would invite a second caller.
+
+`base.css` ships six utility classes (declared in `src/styles/type.css`, which it `@import`s — the
+start-up splash needs them without the rest of `base.css`, docs/RELEASE.md §3.6); **use these rather
+than re-declaring the properties**:
 `.type-headline`, `.type-title`, `.type-body`, `.type-label`, `.type-numeric`, `.type-numeric-sm`.
 `.type-numeric` sets `font-family: var(--font-mono); font-variant-numeric: tabular-nums;
 font-feature-settings: 'tnum' 1, 'zero' 1;`. `.type-numeric-sm` is `.type-numeric` at
@@ -2050,7 +2060,10 @@ exactly these six uses. **Six is the ceiling.** A use not on this list is a bug;
 than adding one.
 
 The budget governs rendered interface surfaces only. The OS application icon and the `.veproj`
-document icon are out of scope and are specified in docs/ICON.md §2.
+document icon are out of scope and are specified in docs/ICON.md §2, as is the application mark's
+reproduction at identity scale (≤ 32 px), which appears in exactly one rendered surface: the
+start-up splash (docs/RELEASE.md §3.8). `scripts/check-contract.mjs` enforces that scope by path —
+`src/splash/graphic.ts` may spend the accent and nothing else under `src/splash/` may.
 
 | # | Family | Use |
 |---|---|---|

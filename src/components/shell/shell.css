@@ -127,6 +127,74 @@
   flex: 0 0 auto;
 }
 
+/* The update strip (docs/RELEASE.md §1.6). Identical geometry and tokens to the
+   recovery strip above, deliberately: both are a fact about this session that
+   the app is telling you, with two actions, that you may ignore. Two
+   appearances would encode a difference that does not exist.
+
+   No accent — a fifth family is not on PLAN §7.4's closed list. No status
+   colour: an available update is not an error, and a failed check is reported
+   through the notice channel rather than by recolouring this row. No shadow, in
+   flow. No animation on insert or removal — §1.7's answer to the layout shift
+   is WHEN the row appears, not how fast. */
+.shell-titlebar-update {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  height: 32px;
+  padding: 0 var(--space-lg);
+  background: var(--surface-panel);
+  border-top: 1px solid var(--border-structural);
+}
+
+.shell-titlebar-update-icon {
+  display: flex;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.shell-titlebar-update-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-ink);
+}
+
+/* Tabular figures fix the width of each DIGIT; they do not fix the number of
+   digits, so 9 % → 10 % → 100 % would reflow the row twice and drag the % sign
+   and every word left of it with it. Three characters at the widest digit width
+   makes the field constant for the whole download. */
+.shell-titlebar-update-pct {
+  display: inline-block;
+  min-width: 3ch;
+  text-align: right;
+}
+
+/* Release notes are one link and no more. Underlined rather than coloured: the
+   accent budget is closed, and an underline is a shape, so the affordance
+   survives every colour-vision deficiency. Hover and press thicken it; the
+   focus ring is base.css's, unmodified. */
+.shell-titlebar-update-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.shell-titlebar-update-link:hover,
+.shell-titlebar-update-link:active {
+  text-decoration-thickness: 2px;
+}
+
+.shell-titlebar-update-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex: 0 0 auto;
+}
+
 /* ============================================================ frame grid ===
    Columns: rail | rail resizer | stage.   Rows: stage | timeline resizer |
    timeline. The timeline spans every column, so it is full width by

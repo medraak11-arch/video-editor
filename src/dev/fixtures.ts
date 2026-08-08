@@ -538,6 +538,23 @@ const noBridge = (what: string): { code: 'io-failed'; message: string } => ({
 export const fixtureAPI: EditorAPI = {
   platform: 'win32',
 
+  // The version is the real one, injected by vite.config.ts's `define` from
+  // package.json (RELEASE.md §2.2). This is not a second source of truth: this
+  // module never reaches the Electron bundle, where main answers with
+  // app.getVersion() instead. The rest is 'n/a' because a browser tab has no
+  // Electron, no Chromium build we own, and no OS release to report.
+  //
+  // There is deliberately NO `update` member: a browser preview cannot update
+  // anything, so dev:web renders no strip and no menu item.
+  build: {
+    version: __VE_VERSION__,
+    electron: 'n/a',
+    chromium: 'n/a',
+    os: 'n/a',
+    arch: 'n/a',
+    packaged: false,
+  },
+
   window: {
     // There is no window to command in a browser tab, and WindowControls does not
     // render outside Electron, so these exist only to keep the contract total.

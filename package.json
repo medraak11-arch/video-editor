@@ -15,7 +15,7 @@
     "build:electron": "node scripts/electron-pkg.mjs && tsc -p tsconfig.electron.json",
     "start": "electron .",
     "contract": "node scripts/check-contract.mjs",
-    "check": "node scripts/check-contract.mjs && node scripts/check-timeline-guards.mjs && node scripts/check-fps-snap.mjs && node scripts/check-export-graph.mjs",
+    "check": "node scripts/check-contract.mjs && node scripts/check-timeline-guards.mjs && node scripts/check-fps-snap.mjs && node scripts/check-export-graph.mjs && node scripts/check-release.mjs",
     "fixtures:media": "node scripts/make-dev-media.mjs",
     "icon": "node scripts/make-icon.mjs",
     "stage:ffmpeg": "node scripts/stage-ffmpeg.mjs",
@@ -24,8 +24,9 @@
     "dist:nobundle": "npm run build && npm run icon && node scripts/stage-ffmpeg.mjs --skip && electron-builder --win --config electron-builder.yml"
   },
   "dependencies": {
-    "@fontsource-variable/jetbrains-mono": "^5.1.1",
     "@fontsource-variable/inter": "^5.1.1",
+    "@fontsource-variable/jetbrains-mono": "^5.1.1",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

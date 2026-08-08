@@ -169,6 +169,40 @@ stage:ffmpeg` copies ffmpeg and ffprobe into `build/ffmpeg/` — see below.
 "Windows protected your PC" the first time you run it; *More info → Run anyway*. Signing it means
 buying a certificate and adding `win.certificateFile` to the config. Nothing else has to change.
 
+Two consequences worth knowing before that changes. **SmartScreen reputation accrues to a publisher
+certificate, not to a filename or a URL** — with no certificate there is no publisher, so no
+reputation ever accumulates and version 0.9.0 is warned about exactly as loudly as 0.1.0 was. If
+updates are ever switched on, that warning arrives on *every* version rather than once. And **the
+only integrity check on an update is the sha512 published in `latest.yml`**: it proves the bytes
+arrived intact, and nothing at all about who wrote them, because whoever can serve `latest.yml` can
+serve a hash that matches whatever executable they also serve. The security of the update channel is
+therefore exactly the security of the host and its TLS — which is why a generic feed over plain
+`http://` is refused outright rather than warned about (docs/RELEASE.md §1.9).
+
+## Updates
+
+**This build ships with no update feed and therefore never contacts a server.** There is no
+`publish:` target in `electron-builder.yml`, so the packaged app contains no
+`resources/app-update.yml`, `electron-updater` is never even loaded, and the application menu has no
+*Check for updates* item — because an item that always answers "you're up to date" on a build that
+cannot update is a lie.
+
+Configuring a feed is a single block in `electron-builder.yml`, documented in `docs/RELEASE.md` §1.2.
+When one exists the app checks **ten minutes after launch and every six hours after that, never on
+launch**, offers what it finds in a 32 px strip in the titlebar rather than a dialog, and **never
+installs anything without a press** — the install goes out through the same unsaved-changes guard
+the window's close button does, so *Cancel* on that dialog cancels the install too.
+
+**There is no rollback.** Downgrades are disabled, so republishing an older release does nothing for
+clients already on the newer one; the remedy for a bad release is a newer release.
+
+**And the copy already installed can never receive one.** A build made with `publish: null` — the
+0.1.0 at `E:/Video Editor` today included — has no `resources/app-update.yml`, so it can never be
+updated no matter what is published later. The first version that carries a feed has to be installed
+by hand, over the old one, with the NSIS installer; from that install onwards updates flow on their
+own. This is the one thing that cannot be discovered from inside the application, because an app with
+no update UI looks identical to an app that is up to date.
+
 ## ffmpeg
 
 The app shells out to `ffmpeg` and `ffprobe`. It does not link them and does not depend on an npm

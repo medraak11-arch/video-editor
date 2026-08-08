@@ -73,9 +73,42 @@ function devMediaPlugin() {
   };
 }
 
-export default defineConfig({
+/* --------------------------------------------------------- the splash CSP
+   RELEASE.md §3.6. The splash needs strictly less than index.html, but the
+   policy is environment-dependent: @vitejs/plugin-react injects an INLINE
+   react-refresh preamble into every HTML entry and Vite's client opens an HMR
+   WebSocket, so the production policy would fill the dev console with
+   violations and stop the splash from hot-reloading. The production policy is
+   the one that ships and the one the gates read out of dist/splash.html.     */
+
+const PROD_CSP =
+  "default-src 'self'; connect-src 'none'; img-src 'self' data:; " +
+  "style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:;";
+const DEV_CSP =
+  "default-src 'self'; connect-src 'self' ws://localhost:5173 http://localhost:5173; " +
+  "img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+  "script-src 'self' 'unsafe-inline'; font-src 'self' data:;";
+
+function veSplashCsp(command: 'build' | 'serve') {
+  return {
+    name: 've-splash-csp',
+    transformIndexHtml(html: string, ctx: { path: string }) {
+      if (!ctx.path.endsWith('splash.html')) return html;
+      return html.replace('%VE_SPLASH_CSP%', command === 'build' ? PROD_CSP : DEV_CSP);
+    },
+  };
+}
+
+/* The version is READ, not imported: `import … assert { type: 'json' }` is gone
+   in Node 23+ and its replacement's support depends on which tsconfig picks the
+   file up. RELEASE.md §2.2. */
+const pkg = JSON.parse(
+  fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { version: string };
+
+export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), devMediaPlugin()],
+  plugins: [react(), devMediaPlugin(), veSplashCsp(command)],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -85,9 +118,18 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  // Consumed only by src/dev/fixtures.ts, which never reaches the Electron
+  // bundle. Main reads app.getVersion() instead — RELEASE.md §2.1.
+  define: { __VE_VERSION__: JSON.stringify(pkg.version) },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        splash: fileURLToPath(new URL('./splash.html', import.meta.url)),
+      },
+    },
   },
-});
+}));

@@ -665,6 +665,20 @@ async function autosaveResolveOffer(id: unknown, how: unknown): Promise<void> {
 const isDiscardQuestion = (v: unknown): v is DiscardQuestion =>
   isObject(v) && typeof v.projectName === 'string' && typeof v.neverSaved === 'boolean';
 
+/** The launch scan (SAFETY §2.7), hoisted so more than one caller can wait on
+ *  the same promise without starting a second one. Null until registration. */
+let launchScan: Promise<RecoveryOffer | null> | null = null;
+
+/**
+ * Resolves when the launch scan has settled, whatever it found. Never rejects.
+ * Resolves immediately when called after it has already settled, and
+ * immediately when registerProjectIpc has not run. RELEASE.md §3.10.
+ */
+export async function whenRecoveryScanSettled(): Promise<void> {
+  if (launchScan === null) return;
+  await launchScan;
+}
+
 export function registerProjectIpc(ipcMain: IpcMain): void {
   ipcMain.removeHandler(CH.projectSave);
   ipcMain.removeHandler(CH.projectOpen);
@@ -680,7 +694,12 @@ export function registerProjectIpc(ipcMain: IpcMain): void {
   // while the scan is readdir + N readFile + stat — so the renderer's invoke can
   // and will land before it resolves. An early invoke waits on this promise; a
   // late one gets the settled value. That is the mechanism (SAFETY §2.7).
+  //
+  // Hoisted to module scope so the splash's `recovery` phase can wait on the
+  // same promise (RELEASE.md §3.10). The timing and semantics are unchanged and
+  // the handler below still returns exactly what it returned before.
   const scan = scanAutosaveDir().catch(() => null);
+  launchScan = scan;
 
   ipcMain.handle(
     CH.projectSave,

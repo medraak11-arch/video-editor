@@ -18,6 +18,8 @@ import type { ReactElement } from 'react';
 import { FolderOpen, MoreHorizontal, PanelLeft, Save, Sliders, Upload } from 'lucide-react';
 import { IconButton, Menu } from '../ui';
 import type { MenuItem } from '../ui';
+import type { AppBuild } from '../../types/api';
+import { getEditorAPI } from '../../lib/editorApi';
 import { readStore, useEditorStore } from '../../state/store';
 import { THEME_LABELS, THEME_NAMES } from '../../state/uiSlice';
 import { ShortcutHint } from '../../keyboard/ShortcutHint';
@@ -28,18 +30,44 @@ import { openProject, saveProject } from '../../keyboard/projectActions';
  * notice channel (PLAN §5). saveProject / openProject already report their own
  * failures; this only catches the case where the bridge itself is unreachable,
  * so a rejection is never swallowed silently.
+ *
+ * `message` is defaulted rather than hardcoded because `Copy version` fails for
+ * a different reason than a file operation does — a clipboard write can be
+ * refused when the window is not focused — and telling that user the editor
+ * could not reach the file system would be false. A default rather than a local
+ * .catch() so there is still exactly one place in this component that turns a
+ * rejected promise into a notice (docs/RELEASE.md §2.3).
  */
-function run(work: Promise<unknown>, title: string): void {
+function run(
+  work: Promise<unknown>,
+  title: string,
+  message = 'The editor could not reach the file system',
+): void {
   void work.catch(() => {
-    readStore().setNotice({
-      tone: 'danger',
-      title,
-      message: 'The editor could not reach the file system',
-    });
+    readStore().setNotice({ tone: 'danger', title, message });
   });
 }
 
+/**
+ * What `Copy version` puts on the clipboard: the block a bug report actually
+ * needs, built in the renderer from api.build and nothing else. Three lines,
+ * \n-joined, no trailing newline. A bug reported from a dev run and one
+ * reported from an installer are different bugs, so the first line says which.
+ */
+function diagnosticBlock(build: AppBuild, platform: string): string {
+  return [
+    `Video Editor ${build.version}${build.packaged ? '' : ' (development build)'}`,
+    `${platform} ${build.os} ${build.arch}`,
+    `Electron ${build.electron} · Chromium ${build.chromium}`,
+  ].join('\n');
+}
+
 export function AppMenu(): ReactElement {
+  // Both are constant for the life of the process, so neither is store state:
+  // `build` arrives in this renderer's argv at window creation (RELEASE.md
+  // §2.2) and `update` is present only in a build whose feed was configured at
+  // package time (§1.3).
+  const { build, platform, update } = getEditorAPI();
   const theme = useEditorStore((s) => s.theme);
   const railCollapsed = useEditorStore((s) => s.railCollapsed);
   const inspectorPinned = useEditorStore((s) => s.inspectorPinned);
@@ -115,6 +143,20 @@ export function AppMenu(): ReactElement {
         })),
       },
       { kind: 'separator', id: 'sep-help' },
+      // Rendered ONLY when a feed is configured. An item that always answers
+      // "you're up to date" on a build that can never update is a lie, and it
+      // is the kind that makes a user stop believing the rest of the interface.
+      // The result lands in the update strip, not here.
+      ...(update
+        ? [
+            {
+              kind: 'item' as const,
+              id: 'check-updates',
+              label: 'Check for updates',
+              onSelect: () => update.check(),
+            },
+          ]
+        : []),
       {
         kind: 'item',
         id: 'shortcuts',
@@ -122,8 +164,30 @@ export function AppMenu(): ReactElement {
         shortcut: <ShortcutHint id="help.shortcuts" />,
         onSelect: () => setShortcutOverlayOpen(true),
       },
+      { kind: 'separator', id: 'sep-version' },
+      // The numerals ride the `shortcut` slot: it is already ReactNode, already
+      // right-aligned, already muted, already read as "the secondary fact about
+      // this row", and Menu.tsx does not aria-hide it — so this item's
+      // accessible name is "Copy version 0.1.0", which is correct, because the
+      // number IS the information. A kind:'label' row would be neither
+      // focusable nor copyable (docs/RELEASE.md §2.3).
+      {
+        kind: 'item',
+        id: 'version',
+        label: 'Copy version',
+        shortcut: <span className="type-numeric">{build.version}</span>,
+        onSelect: () =>
+          run(
+            navigator.clipboard.writeText(diagnosticBlock(build, platform)),
+            'Copy failed',
+            'The version could not be copied to the clipboard',
+          ),
+      },
     ],
     [
+      build,
+      platform,
+      update,
       theme,
       railCollapsed,
       inspectorPinned,
