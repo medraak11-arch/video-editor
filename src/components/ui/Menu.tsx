@@ -32,6 +32,14 @@ export type MenuItem =
       icon?: ReactNode;
       shortcut?: ReactNode;
       checked?: boolean;
+      /**
+       * How `checked` is announced. 'check' (default) is an independent toggle;
+       * 'radio' is one of a mutually exclusive set. The theme submenu is three
+       * options of which exactly one holds, and announcing that as three
+       * independent checkboxes tells a screen-reader user they can have none or
+       * all three.
+       */
+      selection?: 'check' | 'radio';
       disabled?: boolean;
       disabledReason?: string;
       onSelect(): void;
@@ -216,7 +224,13 @@ function MenuList({ items, top, left, onClose, align, anchorRef }: ListProps): R
           <button
             key={item.id}
             type="button"
-            role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+            role={
+              item.checked === undefined
+                ? 'menuitem'
+                : item.selection === 'radio'
+                  ? 'menuitemradio'
+                  : 'menuitemcheckbox'
+            }
             aria-checked={item.checked}
             aria-disabled={disabled || undefined}
             title={disabled ? item.disabledReason : undefined}

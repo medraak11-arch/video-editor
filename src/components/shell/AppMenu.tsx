@@ -108,6 +108,9 @@ export function AppMenu(): ReactElement {
           id: `theme.${name}`,
           label: THEME_LABELS[name],
           checked: theme === name,
+          // Exactly one theme holds at a time. Announced as checkboxes, a screen
+          // reader would offer three independent toggles.
+          selection: 'radio' as const,
           onSelect: () => setTheme(name),
         })),
       },

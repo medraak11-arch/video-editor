@@ -286,20 +286,42 @@ async function openProject(event: IpcMainInvokeEvent, wanted: unknown): Promise<
 
 /* --------------------------------------------------------- pick directory */
 
+/**
+ * In flight, keyed by window. The dialog is window-modal, so a person cannot
+ * click Browse twice — but the renderer can invoke twice (a double activation,
+ * a repeated key, an automated caller), and each invoke raises its own dialog.
+ * Two pickers over one window is a state nobody designed: whichever is answered
+ * last silently wins. Second and later callers share the first one's answer.
+ */
+const directoryPickers = new Map<number, Promise<string | null>>();
+
 async function pickDirectory(event: IpcMainInvokeEvent): Promise<string | null> {
   const win = BrowserWindow.fromWebContents(event.sender);
+  const key = win?.id ?? -1;
+
+  const inFlight = directoryPickers.get(key);
+  if (inFlight) return inFlight;
+
   const dialogOptions: Electron.OpenDialogOptions = {
     title: 'Choose an output folder',
     buttonLabel: 'Choose',
     properties: ['openDirectory', 'createDirectory'],
   };
 
-  const result = win
-    ? await dialog.showOpenDialog(win, dialogOptions)
-    : await dialog.showOpenDialog(dialogOptions);
+  const pending = (async () => {
+    const result = win
+      ? await dialog.showOpenDialog(win, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions);
+    if (result.canceled) return null;
+    return result.filePaths[0] ?? null;
+  })();
 
-  if (result.canceled) return null;
-  return result.filePaths[0] ?? null;
+  directoryPickers.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    directoryPickers.delete(key);
+  }
 }
 
 /* ==================================================== the decision mutex ===
