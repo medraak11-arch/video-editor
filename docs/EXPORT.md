@@ -386,6 +386,11 @@ The option list is not decoration. Each one prevents a specific, observed failur
 - The final **`format=<basePixFmt>`** drops the alpha the base never had, and is what the encoder
   expects.
 
+The chain composites **every** video contributor, so an upper clip that does not fill the frame
+reveals the composite beneath it rather than the base canvas. The preview does not: it renders the
+topmost clip alone (`docs/FORMAT.md §5.5`). This is the one place where the two engines disagree by
+design rather than by defect, and FORMAT §5.5 owns the statement of it.
+
 ### 1.7 The per-clip audio chain and the mix
 
 **Which clips make sound:** `contributesAudio` from §1.4 — any clip whose `ExportSource.hasAudio` is
@@ -1522,9 +1527,12 @@ node scripts/check-export-graph.mjs
 **The §1.8 transcripts are no longer diffed by eye.** `scripts/check-export-graph.mjs` rebuilds all
 three and diffs `filterScript` and `args` against the literals held here, plus a fourth case at
 double the document resolution that pins §1.5's placement rescale (`+100` at `req` = `doc`, `+200` at
-`2 × doc`). It runs inside `npm run check` (`docs/FORMAT.md §10.6`), so a change to `offset()`'s
-output or to the ratio arithmetic fails a gate rather than a reading. Satisfying that diff by eye is
-not satisfying it — it is how the `1.167834` typo in case C survived until the script existed.
+`2 × doc`). It bundles `electron/export/graph.ts` **from source** with esbuild, as its two sibling
+gates already do, so it cannot pass against a stale build (`docs/FORMAT.md §10.6`) — reading
+`dist-electron/` would make the most likely sequence in any change to this file, edit then check,
+green-light un-rebuilt code. It runs inside `npm run check`, so a change to `offset()`'s output or to
+the ratio arithmetic fails a gate rather than a reading. Satisfying that diff by eye is not
+satisfying it — it is how the `1.167834` typo in case C survived until the script existed.
 
 And the real acceptance test, which `dev:web` cannot perform: launch the packaged app, build a
 timeline through the store over CDP, export it, and confirm the written file's frame count and

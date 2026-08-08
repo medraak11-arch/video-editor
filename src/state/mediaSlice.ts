@@ -489,8 +489,17 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
     });
 
     // Step 5: the first ready video item sets the project format. adoptSourceFormat
-    // is a no-op once formatLocked, and it re-derives every duration itself.
-    if (!get().formatLocked && data.kind === 'video' && data.fps > 0 && data.width > 0) {
+    // decides each of rate and shape separately, and re-derives every duration itself.
+    //
+    // The guard tests the two halves with OR, never AND. `data.fps > 0 &&` was correct
+    // under the old single-flag adoptSourceFormat, which took both halves or neither;
+    // under the split it ANDs a RATE test in front of a call whose whole purpose is to
+    // decide per half, so a video whose frame rate ffprobe reports as 0 — a VFR capture,
+    // a container with no avg_frame_rate — would adopt nothing, and a vertical phone
+    // recording would land in a project still sitting at 1920 × 1080 landscape (FORMAT
+    // §7.4 Edit 1). `kind === 'video'` still keeps audio out; the two per-half positivity
+    // tests inside adoptSourceFormat do the rest.
+    if (!get().formatLocked && data.kind === 'video' && (data.fps > 0 || data.width > 0)) {
       get().adoptSourceFormat({ fps: data.fps, width: data.width, height: data.height });
     }
 

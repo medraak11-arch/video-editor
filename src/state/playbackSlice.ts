@@ -85,8 +85,10 @@ export interface PlaybackActions {
   setProjectSize(width: number, height: number): void;
   /**
    * Adopts rate and shape INDEPENDENTLY, and only the halves still unlocked. A source
-   * rate of 0 means "unknown" and adopts nothing. Adopting a rate can raise a Notice,
-   * because it can land on a project that already has clips laid out (FORMAT §7.3).
+   * rate of 0 means "rate unknown" and adopts the shape only. The RATE half additionally
+   * requires an EMPTY timeline, so an import can never re-time an edit that already
+   * exists. Raises no Notice and shortens no clip — those stay `setProjectFps`'s, which
+   * is the action a user takes deliberately (FORMAT §7.3).
    */
   adoptSourceFormat(m: Pick<MediaItem, 'fps' | 'width' | 'height'>): void;
   setVolume(v: number): void;
@@ -251,22 +253,65 @@ export const projectResolutionValue = (width: number, height: number): string =>
   `${evenUp(width)}x${evenUp(height)}`;
 
 /**
+ * `tier` expressed at the EXACT shape of `width × height`, or null when that shape
+ * cannot reach that tier without changing shape. Custom shapes only.
+ *
+ * The test is integer, not float: `long * tier` is at most 16384 × 2160 ≈ 3.5e7, exact
+ * in a double, and `%` on exact integers is exact. A quotient that is not a whole number
+ * misses by at least `1 / short` ≥ 1/16384, four orders of magnitude above double error
+ * at this magnitude, so `Number.isInteger` would agree — the modulo is used because it
+ * says what is meant rather than because it is safer.
+ */
+function exactTierSize(width: number, height: number, tier: number): ProjectSize | null {
+  const short = Math.min(width, height);
+  const long = Math.max(width, height);
+  if (!(short > 0) || tier % 2 !== 0) return null;
+  const scaled = long * tier;
+  if (scaled % short !== 0) return null;
+  const other = scaled / short;
+  if (other % 2 !== 0) return null; // an odd axis is an libx264 hard failure (FORMAT §2.2)
+  return width >= height ? { width: other, height: tier } : { width: tier, height: other };
+}
+
+/**
  * The resolution ladder for a shape. EVERY entry carries the aspect of the size passed
  * in, so nothing in this list can change the shape of the output (FORMAT §6.3).
+ * Descending by short edge, including the passthrough row.
  *
- * Generated from the MATCHED PRESET'S EXACT RATIO, never from the live `width / height`.
- * That is the difference between a stable ladder and one that ratchets: `sizeForTier`
- * rounds up to even, so 854 × 480 is a ratio of 1.779167 rather than 1.777778, and
- * generating from the live ratio would make tier 2160 emit 3844 × 2160 — still inside
- * ASPECT_EPSILON, therefore still labelled `4K UHD`, with real 3840 × 2160 no longer
- * reachable from that project at all. Resolving the preset first makes a preset project
- * regenerate its own canonical ladder from any of its tiers, so the ladder is idempotent.
- * A 'custom' shape has no canonical ratio and keeps the live one.
+ * A PRESET shape is generated from the MATCHED PRESET'S EXACT RATIO, never from the live
+ * `width / height`. That is the difference between a stable ladder and one that ratchets:
+ * `sizeForTier` rounds up to even, so 854 × 480 is a ratio of 1.779167 rather than
+ * 1.777778, and generating from the live ratio would make tier 2160 emit 3844 × 2160 —
+ * still inside ASPECT_EPSILON, therefore still labelled `4K UHD`, with real 3840 × 2160
+ * no longer reachable from that project at all. One ordinary selection would destroy the
+ * named ladder, and the export dialog is fed this same list.
  *
- * Tiers exceeding SIZE_MAX on either axis are skipped: the store would clamp them, and
- * offering `2160 × 1105920` in a menu whose premise is that every row is shippable would
- * hand ffmpeg a 2.4-gigapixel frame. The passthrough row is never skipped, so the
- * project's own size is always reachable.
+ * A CUSTOM shape has no canonical ratio to resolve to, so it emits only the tiers it
+ * reaches EXACTLY — `exactTierSize` above — and skips the rest. Rounding a custom tier to
+ * even is what made the same ratchet unreachable-by-construction for presets and wide open
+ * for custom shapes: a 4096 × 2160 project asked for tier 1440 gets 2730.67 rounded to
+ * 2732, whose ratio is 1.897222 rather than 1.896296, so selecting that row moves the
+ * ladder to 4098 × 2160 and 2050 × 1080 and 4096 × 2160 is gone from that project for
+ * good. FORMAT §2.3 sends every user who needs a non-preset size down exactly that path,
+ * so the ratchet had to close there too and not only for presets.
+ *
+ * Emitting only exact tiers closes it completely, and the proof is one line: every emitted
+ * row is `(t · long/short, t)`, whose own ratio is `long/short` — the ratio it was
+ * generated from, exactly — and whose own short edge is `t`. Regenerating from any row
+ * therefore runs the identical exactness test against the identical ratio and yields the
+ * identical set. The ladder is a fixed point.
+ *
+ * The price is stated rather than hidden: a shape whose ratio reaches no tier exactly —
+ * 1920 × 1000, say — gets a one-row ladder, its own size. That is honest. Every row it
+ * would otherwise have offered was a DIFFERENT shape by up to two pixels, and a menu row
+ * that changes the shape of the output is the failure, not the feature. Such a project
+ * changes size through Width and Height, which is where a custom shape's information lives
+ * anyway.
+ *
+ * Tiers exceeding SIZE_MAX on either axis are skipped for a separate reason: the store
+ * would clamp them, and offering `2160 × 1105920` in a menu whose premise is that every
+ * row is shippable would hand ffmpeg a 2.4-gigapixel frame. The passthrough row is never
+ * skipped, so the project's own size is always reachable.
  */
 export function resolutionLadder(width: number, height: number): ResolutionOption[] {
   const option = (w: number, h: number): ResolutionOption => ({
@@ -278,24 +323,38 @@ export function resolutionLadder(width: number, height: number): ResolutionOptio
   if (!(width > 0) || !(height > 0)) return [option(1920, 1080)];
 
   const preset = presetFor(width, height);
-  const ratio = preset ? preset.ratio : width / height;
-  const tiers: ResolutionOption[] = [];
+  const rows: ResolutionOption[] = [];
   const seen = new Set<string>();
   for (const tier of RESOLUTION_TIERS) {
-    const size = sizeForTier(ratio, tier);
+    const size = preset ? sizeForTier(preset.ratio, tier) : exactTierSize(width, height, tier);
+    if (size === null) continue;
     if (size.width > SIZE_MAX || size.height > SIZE_MAX) continue;
     const value = `${size.width}x${size.height}`;
     if (seen.has(value)) continue;
     seen.add(value);
-    tiers.push(option(size.width, size.height));
+    rows.push(option(size.width, size.height));
   }
+
   // The passthrough row, EVENED — and the membership test uses the evened string too. A
   // saved 1920 × 1081 project must not lead its own export ladder with an odd height that
   // dies in libx264 minutes into a render. The store keeps 1081; the ladder offers 1082;
   // `projectResolutionValue` selects it; the Height field still reads 1081 until the user
   // touches a control.
   const own = projectResolutionValue(width, height);
-  return seen.has(own) ? tiers : [option(evenUp(width), evenUp(height)), ...tiers];
+  if (seen.has(own)) return rows;
+
+  // Inserted in DESCENDING short-edge order, not prepended. The rest of the list is
+  // strictly descending and the passthrough row is usually the SMALLEST size in it — a
+  // 1000 × 1000 project led its own ladder with 1000 × 1000 sitting above 2160 × 2160, so
+  // the row the select opens on read as the largest option while being the smallest. A
+  // list that is descending except at the one row the user is looking at teaches the wrong
+  // thing about every other row.
+  const row = option(evenUp(width), evenUp(height));
+  const shortEdge = sizeTier(row.width, row.height);
+  const at = rows.findIndex((o) => sizeTier(o.width, o.height) < shortEdge);
+  if (at < 0) rows.push(row);
+  else rows.splice(at, 0, row);
+  return rows;
 }
 
 /**
@@ -506,7 +565,20 @@ export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({
     // Each half independently, and only the halves still open. `m.fps <= 0` means "rate
     // unknown", not "rate zero": a caller that cannot measure a frame rate passes 0 and
     // adopts only the size. An audio-only item adopts neither half and locks neither.
-    const takeFps = !s.fpsLocked && m.fps > 0;
+    //
+    // `Object.keys(s.clips).length === 0` is not a nicety — it is the whole of FORMAT
+    // §7.3's edit-safety guarantee. Splitting the locks removed the structural reason an
+    // import could never re-time an existing edit: set 9:16, import audio (nothing locks —
+    // mediaSlice's guard requires kind 'video'), lay several minutes of it out at the
+    // default 30 fps, then import 24 fps video. Without this gate the rate adopts, every
+    // durationFrames shrinks by 20%, and clampClipsToSource truncates those audio clips —
+    // an import silently rewriting an edit, with project format outside TimelineDoc so
+    // Ctrl+Z reverts neither. No notice is good enough for that, so it is made unreachable
+    // rather than reported. An import may decide the rate of a project that has no edit in
+    // it, and may never change the rate of one that does; the Frame rate field still does,
+    // deliberately and with a notice. Size adoption stays ungated because it mutates
+    // nothing (§3.6).
+    const takeFps = !s.fpsLocked && m.fps > 0 && Object.keys(s.clips).length === 0;
     const takeSize = !s.sizeLocked && m.width > 0 && m.height > 0;
     if (!takeFps && !takeSize) return;
 
@@ -523,24 +595,11 @@ export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({
     });
 
     // Duration recompute is a consequence of the RATE only; skip it when only size moved.
-    if (takeFps) {
-      get().recomputeMediaDurations(fps);
-      const trimmed = get().clampClipsToSource();
-      get().seek(get().playhead); // the tail clamp may have moved under the playhead
-      if (trimmed > 0) {
-        // Owed here, where the shipped action owed nothing: with the locks split, a rate
-        // adoption can land on a project that already has clips laid out, and a truncated
-        // clip on a track below the fold is exactly silent (FORMAT §7.3).
-        get().setNotice({
-          tone: 'warning',
-          title: 'Frame rate changed',
-          message:
-            trimmed === 1
-              ? '1 clip was shortened to fit its source'
-              : `${trimmed} clips were shortened to fit their source`,
-        });
-      }
-    }
+    // No clampClipsToSource, no notice, no re-seek: `takeFps` requires an empty timeline,
+    // so there is no clip to shorten and no clip tail that could move under the playhead.
+    // `setProjectFps` still owns all three, because an explicit rate change is exactly the
+    // case where clips DO exist.
+    if (takeFps) get().recomputeMediaDurations(fps);
     get().markDirty();
   },
 

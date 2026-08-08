@@ -3,7 +3,7 @@
    check-export-graph.mjs — the acceptance test for electron/export/graph.ts,
    turned into a gate.
 
-   Run:  node scripts/check-export-graph.mjs   (after npm run build)
+   Run:  node scripts/check-export-graph.mjs
 
    Why this exists: EXPORT.md §1.8 holds three transcripts of verified ffmpeg
    runs and calls them "the acceptance test for this file … diffed byte-for-byte
@@ -21,25 +21,50 @@
         rescale is a provable no-op, so without D the whole point of FORMAT §6.2
         is unmeasured: the three real transcripts cannot see it by construction.
 
-   No dependencies. It imports the BUILD OUTPUT — dist-electron/electron/export/
-   graph.js — so `npm run build` precedes it exactly as it does for the other
-   Electron gates.
+   It bundles electron/export/graph.ts FROM SOURCE with esbuild, exactly as
+   check-fps-snap.mjs and check-timeline-guards.mjs already bundle src/state/*.ts.
+   Reading the build output would be wrong twice, and the second way is the
+   dangerous one: the build output is gitignored, so a clean clone running
+   `npm run check` alone would exit 2 rather than passing — and far worse, a
+   STALE build makes the gate assert against the previous compile and PASS.
+   graph.ts is on this area's ownership list and FORMAT §6.2 changes it, so the
+   most likely sequence in the whole change — edit graph.ts, run npm run check —
+   would green-light un-rebuilt code. The one gate FORMAT calls "not optional"
+   must not be the one that can silently validate something other than the source.
+
+   It resolves cleanly because graph.ts imports only src/types/api.ts and
+   src/types/model.ts, both plain TypeScript with no DOM, no React and no node
+   built-in. esbuild is already a vite dependency, so no package is added.
 --------------------------------------------------------------------------- */
 
-import { existsSync } from 'node:fs';
+import { build } from 'esbuild';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const built = fileURLToPath(
-  new URL('../dist-electron/electron/export/graph.js', import.meta.url),
-);
-if (!existsSync(built)) {
-  console.error('export-graph: dist-electron/electron/export/graph.js not found — run npm run build');
-  process.exit(2);
+const entry = fileURLToPath(new URL('../electron/export/graph.ts', import.meta.url));
+const dir = mkdtempSync(join(tmpdir(), 've-export-graph-'));
+const outfile = join(dir, 'graph.mjs');
+
+let mod;
+try {
+  await build({
+    entryPoints: [entry],
+    outfile,
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    logLevel: 'silent',
+  });
+  mod = await import(pathToFileURL(outfile).href);
+} finally {
+  process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 }
-const ns = await import(pathToFileURL(built).href);
-const buildExportGraph = ns.buildExportGraph ?? ns.default?.buildExportGraph;
+
+const { buildExportGraph } = mod;
 if (typeof buildExportGraph !== 'function') {
-  console.error('export-graph: buildExportGraph is not exported from the build output');
+  console.error('export-graph: buildExportGraph is not exported from electron/export/graph.ts');
   process.exit(2);
 }
 
