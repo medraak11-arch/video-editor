@@ -132,6 +132,11 @@ const HANDLERS: Record<ShortcutHandlerName, () => void> = {
   addMarker: () => {
     readStore().addMarker();
   },
+  // No branch and no guard here: the action itself decides whether there is
+  // anything to detach and raises its own notice when there is not
+  // (AUDIO-FEATURES §7.4, §1.5). Unlike lift/rippleDelete it destroys no DOM
+  // node that could be holding focus, so no hand-off is needed.
+  detachAudio: () => readStore().detachAudio(),
   undo: () => readStore().undo(),
   redo: () => readStore().redo(),
   clearSelection: () => readStore().clearSelection(),

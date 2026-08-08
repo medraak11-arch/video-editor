@@ -18,6 +18,7 @@ import type { ReactElement } from 'react';
 import { Panel } from '../ui';
 import { useEditorStore } from '../../state/store';
 import type { Clip } from '../../types/model';
+import { clipStreams } from '../../types/model';
 import { ClipPropertyRow } from './ClipPropertyRow';
 import { InspectorGroup } from './InspectorGroup';
 import { NamePropertyRow } from './NamePropertyRow';
@@ -41,6 +42,30 @@ export function Inspector(): ReactElement {
     return out;
   }, [selection, clipsById]);
 
+  /**
+   * The one place the stream fact is SPELLED OUT rather than encoded. It states
+   * the non-default only: a selection that is all `av`, or mixed, says nothing.
+   *
+   * Controls then disclose by relevance, in BOTH directions (PLAN preamble S4:
+   * the answer to an inapplicable control is to not render it, never to disable
+   * it). An audio-only clip has no transform and no blend; a video-only clip has
+   * no live Volume — `monitorAudible`, `VideoSurface`'s gain and the export's
+   * `wantsAudio` are all gated off, so the slider would change a stored number
+   * to no audible and no exported effect. Speed stays for both: it retimes the
+   * picture, retimes the sound and rescales duration, so `timeAndSound` itself
+   * never disappears and `InspectorGroupId` is unchanged.
+   *
+   * A MIXED selection renders everything: `updateClipProperties` writes one
+   * patch to every id all-or-nothing, and an inert write is not a wrong one.
+   */
+  const uniformStreams = useMemo(() => {
+    if (clips.length === 0) return null;
+    const first = clipStreams(clips[0]);
+    return clips.every((c) => clipStreams(c) === first) ? first : null;
+  }, [clips]);
+  const audioOnly = uniformStreams === 'audio';
+  const videoOnly = uniformStreams === 'video';
+
   const first = clips[0];
   const heading =
     clips.length === 0
@@ -63,70 +88,79 @@ export function Inspector(): ReactElement {
                 something to have to disclose to reach (RENAME.md §Inspector). */}
             <div className="ve-inspector-identity">
               <NamePropertyRow clips={clips} />
+              {audioOnly || videoOnly ? (
+                <p className="ve-inspector-streams type-label">
+                  {audioOnly ? 'Audio only' : 'Video only'}
+                </p>
+              ) : null}
             </div>
 
-            <InspectorGroup id="transform" heading="Transform">
-              <ClipPropertyRow
-                clips={clips}
-                field="scale"
-                label="Scale"
-                historyLabel="Adjust scale"
-                min={1}
-                max={1000}
-                step={1}
-                precision={0}
-                scrubSensitivity={0.5}
-                suffix="%"
-                toDisplay={toPercent}
-                fromDisplay={fromPercent}
-              />
-              <ClipPropertyRow
-                clips={clips}
-                field="positionX"
-                label="Position X"
-                historyLabel="Adjust position"
-                step={1}
-                precision={0}
-                suffix="px"
-              />
-              <ClipPropertyRow
-                clips={clips}
-                field="positionY"
-                label="Position Y"
-                historyLabel="Adjust position"
-                step={1}
-                precision={0}
-                suffix="px"
-              />
-              <ClipPropertyRow
-                clips={clips}
-                field="rotation"
-                label="Rotation"
-                historyLabel="Adjust rotation"
-                min={-180}
-                max={180}
-                step={1}
-                precision={0}
-                suffix="°"
-              />
-            </InspectorGroup>
+            {audioOnly ? null : (
+              <InspectorGroup id="transform" heading="Transform">
+                <ClipPropertyRow
+                  clips={clips}
+                  field="scale"
+                  label="Scale"
+                  historyLabel="Adjust scale"
+                  min={1}
+                  max={1000}
+                  step={1}
+                  precision={0}
+                  scrubSensitivity={0.5}
+                  suffix="%"
+                  toDisplay={toPercent}
+                  fromDisplay={fromPercent}
+                />
+                <ClipPropertyRow
+                  clips={clips}
+                  field="positionX"
+                  label="Position X"
+                  historyLabel="Adjust position"
+                  step={1}
+                  precision={0}
+                  suffix="px"
+                />
+                <ClipPropertyRow
+                  clips={clips}
+                  field="positionY"
+                  label="Position Y"
+                  historyLabel="Adjust position"
+                  step={1}
+                  precision={0}
+                  suffix="px"
+                />
+                <ClipPropertyRow
+                  clips={clips}
+                  field="rotation"
+                  label="Rotation"
+                  historyLabel="Adjust rotation"
+                  min={-180}
+                  max={180}
+                  step={1}
+                  precision={0}
+                  suffix="°"
+                />
+              </InspectorGroup>
+            )}
 
-            <InspectorGroup id="blend" heading="Blend">
-              <ClipPropertyRow
-                clips={clips}
-                field="opacity"
-                label="Opacity"
-                historyLabel="Adjust opacity"
-                min={0}
-                max={100}
-                step={1}
-                precision={0}
-                scrubSensitivity={0.5}
-                suffix="%"
-                toDisplay={toPercent}
-                fromDisplay={fromPercent}
-              />
-            </InspectorGroup>
+            {audioOnly ? null : (
+              <InspectorGroup id="blend" heading="Blend">
+                <ClipPropertyRow
+                  clips={clips}
+                  field="opacity"
+                  label="Opacity"
+                  historyLabel="Adjust opacity"
+                  min={0}
+                  max={100}
+                  step={1}
+                  precision={0}
+                  scrubSensitivity={0.5}
+                  suffix="%"
+                  toDisplay={toPercent}
+                  fromDisplay={fromPercent}
+                />
+              </InspectorGroup>
+            )}
 
             <InspectorGroup id="timeAndSound" heading="Time and sound">
               <ClipPropertyRow
@@ -145,20 +179,22 @@ export function Inspector(): ReactElement {
                 // gesture. See ClipPropertyRow's header.
                 applyOnCommitOnly
               />
-              <ClipPropertyRow
-                clips={clips}
-                field="volume"
-                label="Volume"
-                historyLabel="Adjust volume"
-                min={0}
-                max={200}
-                step={1}
-                precision={0}
-                scrubSensitivity={0.5}
-                suffix="%"
-                toDisplay={toPercent}
-                fromDisplay={fromPercent}
-              />
+              {videoOnly ? null : (
+                <ClipPropertyRow
+                  clips={clips}
+                  field="volume"
+                  label="Volume"
+                  historyLabel="Adjust volume"
+                  min={0}
+                  max={200}
+                  step={1}
+                  precision={0}
+                  scrubSensitivity={0.5}
+                  suffix="%"
+                  toDisplay={toPercent}
+                  fromDisplay={fromPercent}
+                />
+              )}
             </InspectorGroup>
           </>
         )}

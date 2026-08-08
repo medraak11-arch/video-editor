@@ -15,8 +15,9 @@
 import './timeline.css';
 import { memo } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
-import { EyeOff, Lock, TriangleAlert, Unplug, VolumeX } from 'lucide-react';
+import { AudioLines, EyeOff, Film, Lock, TriangleAlert, Unplug, VolumeX } from 'lucide-react';
 import type { ClipId, PxPerFrame } from '../../types/model';
+import { clipStreams } from '../../types/model';
 import { useEditorStore } from '../../state/store';
 import { framesToDuration, framesToPx } from '../../lib/time';
 import {
@@ -105,6 +106,12 @@ export const Clip = memo(function Clip({
   const warned = useEditorStore((s) =>
     clip ? (s.items[clip.mediaId]?.warnings.length ?? 0) > 0 : false,
   );
+  // [stable] — a string primitive, so React.memo still holds and a pointermove
+  // still causes zero renders here.
+  const streams = useEditorStore((s) => {
+    const c = s.clips[id];
+    return c ? clipStreams(c) : 'av';
+  });
 
   if (!clip) return null;
 
@@ -114,8 +121,13 @@ export const Clip = memo(function Clip({
   const stripHeight = Math.min(STRIP_MAX_HEIGHT, Math.round(laneHeight * 0.4));
   // DESIGN.md §5: below 24px the NAME drops and the strip remains. It occupies
   // the top ~40% only, so the texture underneath still reads at 8px of width.
+  // The strip is the MEDIA's thumbnail and the media is a video file, so an
+  // audio-only clip would otherwise render video frames on an audio lane — the
+  // interface asserting something false. Suppressing it is the third of §1.8's
+  // four channels, and the widest one that is not the lane itself.
   const showStrip =
     thumbnailUrl !== null &&
+    streams !== 'audio' &&
     laneHeight >= STRIP_MIN_LANE_HEIGHT &&
     stripHeight >= 8 &&
     paintWidth >= CLIP_MIN_HIT_WIDTH;
@@ -133,11 +145,20 @@ export const Clip = memo(function Clip({
   };
   if (textures.length > 0) style.backgroundImage = textures.join(', ');
 
+  // `streams !== 'av'` is what makes §1.8's icon channel exist at all: a
+  // detached clip on an unlocked, unmuted, visible track whose media is online
+  // and warning-free satisfies none of the other five, which is the normal case
+  // and the one this feature is for.
   const showStateIcons =
-    showIcons && (offline || warned || trackLocked || trackMuted || trackHidden);
-  // Two slots at most: one source-state glyph, one track-state glyph.
+    showIcons && (offline || warned || trackLocked || trackMuted || trackHidden || streams !== 'av');
+  // Three slots at most: source-state, stream, track-state — counted in the
+  // order they are rendered. The count is subtracted from fitClipName's budget
+  // below, so an un-widened one is 16px too generous and truncates a name in the
+  // middle instead of at its head.
   const iconSlots = showStateIcons
-    ? (offline || warned ? 1 : 0) + (trackLocked || trackMuted || trackHidden ? 1 : 0)
+    ? (offline || warned ? 1 : 0) +
+      (streams !== 'av' ? 1 : 0) +
+      (trackLocked || trackMuted || trackHidden ? 1 : 0)
     : 0;
   // CLIP_MIN_LABEL_WIDTH gates on the clip's paint width; the icons then take a
   // further 16 px each out of the body, which is what used to leave 38-50 px clips
@@ -153,6 +174,8 @@ export const Clip = memo(function Clip({
   if (trackLocked) states.push('track locked');
   if (trackMuted) states.push('track muted');
   if (trackHidden) states.push('track hidden');
+  if (streams === 'audio') states.push('audio only');
+  if (streams === 'video') states.push('video only');
   if (warned) states.push('format mismatch');
   const label = `${clip.name}, ${duration}${states.length > 0 ? `, ${states.join(', ')}` : ''}`;
 
@@ -163,6 +186,7 @@ export const Clip = memo(function Clip({
       data-clip-id={id}
       data-selected={selected || undefined}
       data-offline={offline || undefined}
+      data-streams={streams === 'av' ? undefined : streams}
       data-tiny={tiny || undefined}
       role="option"
       aria-selected={selected}
@@ -191,6 +215,12 @@ export const Clip = memo(function Clip({
                   <TriangleAlert size={14} strokeWidth={1.75} />
                 </span>
               ) : null}
+              {/* Names what the clip CONTAINS, not what it lacks: a negative
+                  glyph on a clip that is working normally reads as an error,
+                  and VolumeX already means "track muted" in this same strip.
+                  No data-tone — this is what the clip is, not a status. */}
+              {streams === 'audio' ? <AudioLines size={14} strokeWidth={1.75} /> : null}
+              {streams === 'video' ? <Film size={14} strokeWidth={1.75} /> : null}
               {trackLocked ? <Lock size={14} strokeWidth={1.75} /> : null}
               {trackMuted && !trackLocked ? <VolumeX size={14} strokeWidth={1.75} /> : null}
               {trackHidden && !trackLocked && !trackMuted ? (

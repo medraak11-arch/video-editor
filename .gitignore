@@ -4,6 +4,9 @@ dist-electron/
 release/
 dist-release/
 build/ffmpeg/
+# `npm run icon --proof` output only. Never broaden this to `build/`: icon.png,
+# icon.ico, veproj.ico and installer.nsh are tracked build inputs (ICON.md §10).
+build/icon-proof/
 out/
 *.log
 .DS_Store

@@ -15,7 +15,7 @@
 --------------------------------------------------------------------------- */
 
 import type { Clip, ClipId, MediaItem, Track, TrackId } from '../../types/model';
-import { clipEnd } from '../../types/model';
+import { clipEnd, clipHasAudio } from '../../types/model';
 
 /* ------------------------------------------------------------- §9 constants */
 
@@ -169,6 +169,12 @@ export function median(values: readonly number[]): number {
  * not "fix" this.
  */
 export const monitorAudible = (clip: Clip, track: Track, media: MediaItem): boolean =>
+  // Added first, because it is the cheapest and the most decisive. It goes into the
+  // EXPORT predicate in the same change and with the same meaning (AUDIO-FEATURES
+  // §1.7.2 / §1.7.3), so the mirror this comment block describes is preserved rather
+  // than broken. Without it a detached pair is audible TWICE: once from the <video>
+  // element carrying the picture half, once from the twin's own voice.
+  clipHasAudio(clip) &&
   media.status === 'ready' &&
   media.url !== '' &&
   media.hasAudio &&

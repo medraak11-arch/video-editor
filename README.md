@@ -20,10 +20,18 @@ sign in to. The chrome stays dark and quiet so the frame is the only lit thing o
   field. The extension is preserved, and every clip cut from the file keeps playing from it — clips
   reference media by id, so nothing goes offline. A clip's own label on the timeline is a separate,
   display-only name and is left alone, so one gesture only ever does one thing.
+- Detach a clip's audio onto its own track — `Shift+D`, or the clip's context menu. The picture
+  keeps its place and goes silent, the sound lands beside it and can be trimmed, moved or deleted
+  on its own.
 - Export to H.264, H.265 or ProRes at a chosen size, rate and quality, over the whole timeline or
-  the in–out range. One ffmpeg process, real progress, working cancel.
+  the in–out range. Or export the mix alone as AAC, MP3 or WAV, through the same verified audio
+  chain — the resolution and frame rate rows leave the form rather than greying out. One ffmpeg
+  process, real progress, working cancel.
 - Projects save as `.veproj` — plain JSON you can read, diff and keep in version control. An
   installed build owns the extension, so double-clicking one opens it in the running window.
+- Closing with unsaved changes stops and asks — save, do not save, or cancel — and so does opening
+  another project over one, whether it arrives by `Ctrl+O` or from a double-clicked `.veproj`.
+  Cancel genuinely cancels, and a save that needs a filename gets one before the window goes.
 - Three themes — `signal`, `instrument`, `daylight` — from the `…` menu in the title bar. Every
   palette is contrast-verified and none of them encodes state in hue alone.
 
@@ -107,7 +115,7 @@ buttons keep their own keys.
 | `Ctrl+I` | Import media |
 | `Ctrl+S` | Save project |
 | `Ctrl+O` | Open project |
-| `Ctrl+E` | Export video |
+| `Ctrl+E` | Export |
 | `?` | Show keyboard shortcuts |
 
 **Timeline**
@@ -118,6 +126,7 @@ buttons keep their own keys.
 | `Delete` | Lift selection |
 | `Shift+Delete` | Ripple delete selection |
 | `M` | Add marker at playhead |
+| `Shift+D` | Detach audio |
 | `+` or `=` | Zoom in |
 | `-` | Zoom out |
 | `Shift+Z` | Zoom to fit |
@@ -147,8 +156,13 @@ reached by passing the file on the command line: `npm start -- "path/to/project.
 way a second launch does not open a second window — the single-instance lock hands the path to the
 window already open.
 
-Two things happen before the packager runs. `npm run icon` redraws `build/icon.png` from the
-palette in `src/styles/tokens.css`, so the app mark cannot drift from the theme. `npm run
+Two things happen before the packager runs. `npm run icon` redraws **both marks** — the application
+icon and the `.veproj` document icon — from the palette in `src/styles/tokens.css`, so neither can
+drift from the theme, and writes `build/icon.png`, `build/icon.ico` and `build/veproj.ico`. Each
+`.ico` carries seven separately authored sizes rather than one image scaled down, so the 16 px
+Explorer entry is drawn for 16 px instead of being a blurred 256. The script then reads both files
+back and measures them — entry table, payload formats, and the contrast of each mark against a
+light and a dark Explorer background — and exits non-zero if anything fails. `npm run
 stage:ffmpeg` copies ffmpeg and ffprobe into `build/ffmpeg/` — see below.
 
 **The installer is not code-signed.** There is no certificate, so Windows SmartScreen will say
@@ -205,10 +219,19 @@ These are design decisions and honest gaps, not bugs.
   opacity and speed apply to that clip against the background. Stacked video tracks decide *which*
   clip is on top; they do not blend. Audio tracks do mix.
 - **No transitions, titles, effects or colour correction.** A cut is a cut.
-- **Nothing autosaves.** `Ctrl+S` is the only thing that writes a project, and closing the window
-  does not stop to ask about unsaved changes. The dot beside the project name in the title bar is
-  the only warning you get. Opening another project replaces the one in the window on the same
-  terms, whether it arrives by `Ctrl+O` or by double-clicking a `.veproj`.
+- **Autosave is a crash net, not version history.** A snapshot of the open project is written to
+  `%APPDATA%\Video Editor\autosave\` about two seconds after you stop editing, and never less often
+  than every twenty seconds while there are unsaved changes — so a crash or a power cut costs at
+  most twenty seconds of editing. While an export is running that becomes a minute, so the snapshot
+  never stutters the encode. It never writes to your `.veproj`; only `Ctrl+S` does that. After a
+  crash the next launch offers the work back in the title bar, but only the **newest** snapshot:
+  there is no list to browse and no history to roll back through. A clean exit or a save retires it.
+- **Detached audio is not linked to its picture.** Once detached, the two clips are fully
+  independent: moving, trimming or deleting one does nothing to the other, and there is no
+  re-attach. Select both if you want them to move together.
+- **Audio-only exports always produce a stereo 48 kHz file.** That is where the mix is built, and
+  there are no sample-rate or channel-count controls. Quality picks the bitrate — or, for WAV, 16-
+  against 24-bit.
 - **One export at a time per window.** Starting a second reports that one is already running rather
   than queueing it.
 - **Renaming a file is not undoable.** `Ctrl+Z` is a stack of timeline snapshots and a disk rename
@@ -233,7 +256,11 @@ src/
   styles/          tokens.css — the only file allowed to contain a colour
 scripts/           contract checker, icon, ffmpeg staging, keymap generation, media fixtures
 docs/              PLAN.md (implementation), EXPORT.md (the ffmpeg contract),
-                   RENAME.md (renaming a source file on disk)
+                   AUDIO-MONITOR.md (how preview audio works),
+                   AUDIO-FEATURES.md (detach audio, audio-only export),
+                   RENAME.md (renaming a source file on disk),
+                   SAFETY.md (the close prompt and autosave),
+                   ICON.md (the two marks and the .ico ladders)
 ```
 
 `PRODUCT.md` and `DESIGN.md` at the root carry the design principles and the visual system. Read

@@ -17,6 +17,7 @@
 --------------------------------------------------------------------------- */
 
 import './components/shell/shell.css';
+import { useEffect } from 'react';
 import type { ReactElement } from 'react';
 import { ThemeProvider } from './components/shell/ThemeProvider';
 import { TitleBar } from './components/shell/TitleBar';
@@ -27,11 +28,15 @@ import { ExportDialog } from './components/export/ExportDialog';
 import { ShortcutOverlay } from './keyboard/ShortcutOverlay';
 import { useShortcuts } from './keyboard/useShortcuts';
 import { useOpenHandoff } from './keyboard/useOpenHandoff';
+import { startProjectSafety } from './keyboard/projectActions';
 
 export function App(): ReactElement {
   useShortcuts();
   useUiPersistence();
   useOpenHandoff();
+  // Inside the component, not at module scope, so mounting App in a test or
+  // under dev:web never leaves a timer running that nothing owns (SAFETY §9.4).
+  useEffect(() => startProjectSafety(), []);
 
   return (
     <ThemeProvider>

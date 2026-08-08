@@ -29,7 +29,7 @@ import { openProject, saveProject } from '../../keyboard/projectActions';
  * failures; this only catches the case where the bridge itself is unreachable,
  * so a rejection is never swallowed silently.
  */
-function run(work: Promise<void>, title: string): void {
+function run(work: Promise<unknown>, title: string): void {
   void work.catch(() => {
     readStore().setNotice({
       tone: 'danger',
@@ -77,7 +77,7 @@ export function AppMenu(): ReactElement {
       {
         kind: 'item',
         id: 'export',
-        label: 'Export video',
+        label: 'Export',
         icon: <Upload size={14} strokeWidth={1.75} />,
         shortcut: <ShortcutHint id="file.export" />,
         onSelect: () => setExportDialogOpen(true),

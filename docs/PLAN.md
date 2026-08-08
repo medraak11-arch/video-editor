@@ -536,10 +536,24 @@ export interface Clip {
   /** Display name. Defaults to the media name; user-renameable later. */
   name: string;
   properties: ClipProperties;
+  /**
+   * Which streams of the referenced media this clip uses. Undefined ≡ 'av', so a
+   * .veproj written before the feature is a valid file rather than a migration and
+   * PROJECT_VERSION stays 1. Written ONLY by `detachAudio`; read only through
+   * `clipStreams`. See docs/AUDIO-FEATURES.md §1.1.
+   */
+  streams?: ClipStreams;
 }
 
 /** Exclusive end. There is no `end` field — derive it, always, with this helper. */
 export const clipEnd = (c: Clip): Frames => c.start + c.duration;
+
+/** THE reader. Nothing anywhere may write `c.streams ?? 'av'` inline. */
+export const clipStreams = (c: Clip): ClipStreams => c.streams ?? 'av';
+/** True when this clip puts pixels on the canvas. */
+export const clipHasVideo = (c: Clip): boolean => clipStreams(c) !== 'audio';
+/** True when this clip puts samples in the mix. */
+export const clipHasAudio = (c: Clip): boolean => clipStreams(c) !== 'video';
 
 /** Source frames this clip consumes. THE source-mapping primitive — see the invariant below. */
 export const clipSourceLength = (c: Clip): Frames =>
@@ -786,15 +800,22 @@ are session-only and are never persisted. No other slice reads or writes this ke
 **Who calls `markDirty()` — the complete list. Nothing else may call it.**
 
 `addClip`, `insertMediaAt`, `moveClip`, `moveClips`, `trimClip`, `splitAtPlayhead`,
-`deleteSelection`, `rippleDelete`, `addTrack`, `removeTrack`, `setTrackHeight`, `toggleMute`,
-`toggleLock`, `toggleVisible`, `addMarker`, `removeMarker`, `updateClipProperties`, `renameClip`,
-`clampClipsToSource` (only when it changed something), `undo`, `redo`, `addItem`, `removeItem`,
-`setProjectName`, `setProjectFps`, `setProjectSize` and `adoptSourceFormat`.
+`deleteSelection`, `rippleDelete`, `detachAudio`, `addTrack`, `removeTrack`, `setTrackHeight`,
+`toggleMute`, `toggleLock`, `toggleVisible`, `addMarker`, `removeMarker`, `updateClipProperties`,
+`renameClip`, `clampClipsToSource` (only when it changed something), `undo`, `redo`, `addItem`,
+`removeItem`, `setProjectName`, `setProjectFps`, `setProjectSize`, `adoptSourceFormat`, and
+`restoreRecovery` (docs/SAFETY.md §9.6 — restored state matches nothing on disk, so it is dirty by
+construction; it is the only caller that is a module function rather than a store action).
+
+`detachAudio` is on the list per docs/AUDIO-FEATURES.md §0.2 amendment A1. Its refusal path is not:
+when nothing is eligible it calls `setNotice` and returns without touching the document.
 
 **Explicitly NOT dirty:** `setZoom`, `zoomAround`, `zoomToFit`, `setScroll`, `setSnapEnabled`,
 `select`, `selectMany`, `clearSelection`, `setTheme`, rail/timeline resize, every playback transport
-action, `markClipsOffline`, `setNotice`, and every hydrate action (which call `markSaved()`
-instead). Scrolling the timeline must never light the unsaved dot.
+action, `markClipsOffline`, `setNotice`, `noteAutosaveWritten`, `noteAutosaveFailed`,
+`setRecoveryOffer`, `clearRecoveryOffer`, and every hydrate action (which call `markSaved()`
+instead). Scrolling the timeline must never light the unsaved dot, and an autosave must never make
+the project look *more* unsaved than it was — a snapshot is not a save either way.
 
 Since `timelineSlice` and `mediaSlice` cannot import `uiSlice` state directly, they call
 `get().markDirty()` — the action exists on the merged store. That plus `get().setNotice(…)` are the
@@ -2027,6 +2048,9 @@ resolution**: the accent marks **time indication, selection (including focus, wh
 selection), active toggle state, and the one primary action** — four families, and within them
 exactly these six uses. **Six is the ceiling.** A use not on this list is a bug; report it rather
 than adding one.
+
+The budget governs rendered interface surfaces only. The OS application icon and the `.veproj`
+document icon are out of scope and are specified in docs/ICON.md §2.
 
 | # | Family | Use |
 |---|---|---|

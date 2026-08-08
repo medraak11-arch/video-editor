@@ -27,6 +27,7 @@
 import { useEffect } from 'react';
 import type { MutableRefObject, RefObject } from 'react';
 import type { Clip, Track, TrackId } from '../../types/model';
+import { clipHasAudio } from '../../types/model';
 import type { StoreState } from '../../state/types';
 import type { Notice } from '../../state/uiSlice';
 import { readStore, useEditorStore } from '../../state/store';
@@ -272,7 +273,13 @@ export function useAudioMonitor(
       /* ---- §7.3 the cap. Clock clip first, then audio tracks, then video tracks. */
 
       const total = audioVoices.length + videoVoices.length;
-      const budget = Math.max(0, MAX_AUDIBLE_SOURCES - (clockClipId !== null ? 1 : 0));
+      // The reserved slot is for the <video> element's own sound. A video-only
+      // clock clip has just been forced to gain 0 in VideoSurface, so reserving
+      // for it would spend a monitored voice on silence and report the cap one
+      // clip early. Same fact as VideoSurface's `clipVolume`, read the same way.
+      const clockClip = clockClipId !== null ? s.clips[clockClipId] : undefined;
+      const clockAudible = clockClip !== undefined && clipHasAudio(clockClip);
+      const budget = Math.max(0, MAX_AUDIBLE_SOURCES - (clockAudible ? 1 : 0));
       const chosen = [...audioVoices, ...videoVoices].slice(0, budget);
       if (chosen.length < total && capNoticedRun !== run) {
         capNoticedRun = run;

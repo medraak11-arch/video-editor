@@ -34,9 +34,11 @@ import type {
   DragEvent as ReactDragEvent,
   FocusEvent as ReactFocusEvent,
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   RefObject,
 } from 'react';
+import type { ClipContextMenuHandle } from './ClipContextMenu';
 import type { ClipId, Frames, TrackId } from '../../types/model';
 import type { StoreState } from '../../state/types';
 import { readStore } from '../../state/store';
@@ -197,9 +199,13 @@ interface ScrubGesture extends Common {
 
 type Gesture = MoveGesture | TrimGesture | MarqueeGesture | ScrubGesture;
 
+/** Inset of the keyboard-opened menu from the focused clip's bottom-left corner. */
+const GAP_FROM_CLIP = 8;
+
 export interface TimelineInteraction {
   focusedClipId: ClipId | null;
   onLanePointerDown(event: ReactPointerEvent<HTMLDivElement>): void;
+  onLaneContextMenu(event: ReactMouseEvent<HTMLDivElement>): void;
   onRulerPointerDown(event: ReactPointerEvent<HTMLDivElement>): void;
   onPlayheadKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void;
   onLaneKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void;
@@ -211,7 +217,10 @@ export interface TimelineInteraction {
   onDragStart(event: ReactDragEvent<HTMLDivElement>): void;
 }
 
-export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInteraction {
+export function useTimelineInteraction(
+  refs: TimelineOverlayRefs,
+  clipMenu: RefObject<ClipContextMenuHandle | null>,
+): TimelineInteraction {
   const [focusedClipId, setFocusedClipId] = useState<ClipId | null>(null);
   const gesture = useRef<Gesture | null>(null);
   const autoScroll = useRef<number | null>(null);
@@ -976,6 +985,33 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
     [focusClip, refs.laneContent, refs.laneViewport, stopMomentum],
   );
 
+  /**
+   * The clip context menu, opened from the lane viewport's delegated handler —
+   * so it costs no per-clip listener at forty clips, exactly as
+   * `onLanePointerDown` already resolves a clip through `[data-clip-id]`.
+   *
+   * A right-press must NOT change an existing selection (`handlePointerDown`
+   * ignores `button > 0` for the same reason: a context-menu press is not a
+   * choice). When the clip is not selected it is selected `replace` first, so
+   * the menu never acts on something invisible.
+   */
+  const onLaneContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>): void => {
+      const clipEl = (event.target as HTMLElement).closest<HTMLElement>('[data-clip-id]');
+      if (!clipEl) return;
+      const id = clipEl.dataset.clipId as ClipId;
+      const s = readStore();
+      if (!s.clips[id]) return;
+      event.preventDefault();
+      if (!s.selection.has(id)) s.select(id, 'replace');
+      // The menu acts on the clip it opened on, so that is where the keyboard
+      // comes back to.
+      focusClip(id);
+      clipMenu.current?.openAt(id, event.clientY, event.clientX);
+    },
+    [clipMenu, focusClip],
+  );
+
   const beginScrub = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, focusTarget: HTMLElement | null): void => {
       if (event.button !== 0) return;
@@ -1066,6 +1102,26 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
         scrollClipIntoView(s, id, refs.laneViewport.current);
       };
 
+      // Both platform conventions for "open the context menu on the focused
+      // thing", so the menu is reachable on a keyboard that has no Menu key —
+      // the same pair the media rail's rows already answer to.
+      if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+        if (!current || !s.clips[current]) return;
+        event.preventDefault();
+        const el = refs.laneContent.current?.querySelector<HTMLElement>(
+          `[data-clip-id="${current}"]`,
+        );
+        if (!el) return;
+        if (!s.selection.has(current)) s.select(current, 'replace');
+        const rect = el.getBoundingClientRect();
+        clipMenu.current?.openAt(
+          current,
+          rect.bottom - GAP_FROM_CLIP,
+          rect.left + GAP_FROM_CLIP,
+        );
+        return;
+      }
+
       // PROVISIONAL BINDING — see the final report's §0.2 request for
       // `nav.clipBack` / `nav.clipForward`. Handled locally only until the
       // registry carries the ids; nothing here should be copied as a pattern.
@@ -1138,7 +1194,7 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
         }
       }
     },
-    [focusClip, focusedClipId, refs.laneViewport],
+    [clipMenu, focusClip, focusedClipId, refs.laneContent, refs.laneViewport],
   );
 
   /**
@@ -1292,6 +1348,7 @@ export function useTimelineInteraction(refs: TimelineOverlayRefs): TimelineInter
   return {
     focusedClipId,
     onLanePointerDown,
+    onLaneContextMenu,
     onRulerPointerDown,
     onPlayheadKeyDown,
     onLaneKeyDown,

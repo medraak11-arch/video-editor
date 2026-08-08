@@ -195,7 +195,7 @@ Identical structure, identical role names, fully verified.
 
 **The Only Color Rule.** The footage is the most saturated thing on screen at all times. Interface chroma never exceeds 0.018 outside of `accent`, `danger`, and `warning`. If a surface needs emphasis, it moves along the lightness ramp — it does not gain chroma.
 
-**The Three Uses Rule.** The accent appears on the playhead, the current selection, and the one primary action. A fourth use is a bug. When everything is accented, the selection is invisible, and the selection is the single most important piece of state in an editor.
+**The Three Uses Rule.** The accent appears on the playhead, the current selection, and the one primary action. A fourth use is a bug. This governs rendered interface surfaces only; the OS application icon and the `.veproj` document icon are specified in docs/ICON.md §2. When everything is accented, the selection is invisible, and the selection is the single most important piece of state in an editor.
 
 **The Lightness-First Rule.** Status roles separate by lightness before hue. This is measured, not stylistic: with hue-led separation, `danger`/`success` collapsed to ΔE 0.07 and `warning`/`success` to ΔE 0.04 under simulated deuteranopia. Lightness survives every deficiency type; hue does not. Every status pair now holds ΔE ≥ 0.10 under normal, deuteranopic, protanopic and tritanopic simulation.
 

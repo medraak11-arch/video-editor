@@ -49,14 +49,25 @@ buildDependenciesFromSource: false
 # Double-clicking a .veproj opens it. Without this entry the OS has no reason to
 # hand the file to this app at all, and main.ts's argv / 'open-file' handling
 # would only ever be reachable from a command line.
+#
+# `icon:` is also what electron-builder would find by convention at
+# ${buildResources}/veproj.ico. It is written out anyway: a convention that
+# works by accident is a convention that breaks silently. build/installer.nsh
+# broadcasts SHCNE_ASSOCCHANGED after the association is registered, without
+# which an upgrade keeps the old DefaultIcon in Explorer's cache until logoff.
 fileAssociations:
   - ext: veproj
     name: Video Editor project
     description: Video Editor project
     role: Editor
+    icon: build/veproj.ico
 
 win:
-  icon: build/icon.png
+  # Not build/icon.png. Pointed at a PNG, electron-builder generates the .ico
+  # itself and every entry is a downscale of one bitmap, which throws away the
+  # seven separately authored sizes in docs/ICON.md §3. scripts/make-icon.mjs
+  # writes this file, and verifies it by reading it back.
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64]

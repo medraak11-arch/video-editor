@@ -27,6 +27,15 @@ export const CH = {
   exportStart: 'export:start',
   exportCancel: 'export:cancel',
   exportProgress: 'export:progress', // main -> renderer
+  // SAFETY.md §5 — the close prompt and autosave.
+  appProjectState: 'app:project-state', // renderer -> main, send
+  appSaveRequest: 'app:save-request', // main -> renderer, send
+  appSaveResult: 'app:save-result', // renderer -> main, send
+  appConfirmDiscard: 'app:confirm-discard', // renderer -> main, invoke
+  autosaveWrite: 'autosave:write', // renderer -> main, invoke
+  autosaveRecoverable: 'autosave:recoverable', // renderer -> main, invoke
+  autosaveRetire: 'autosave:retire', // renderer -> main, invoke
+  autosaveResolve: 'autosave:resolve-offer', // renderer -> main, invoke
 } as const;
 
 export type ChannelName = (typeof CH)[keyof typeof CH];
@@ -90,6 +99,13 @@ export type OpenResult =
   | { ok: true; path: string; project: ProjectFile }
   | { ok: false; error: { code: 'cancelled' | 'io-failed' | 'bad-format'; message: string } };
 
+/* ---- the codec union — AUDIO-FEATURES §2.2 ------------------------------ */
+
+/** Codecs that put pixels in the file. `CODEC_SHAPE` and `BITRATE_KBPS` are keyed by this. */
+export type VideoCodec = 'h264' | 'h265' | 'prores';
+/** Codecs that produce an audio-only file: no video stream, no output frame grid. */
+export type AudioCodec = 'aac' | 'mp3' | 'wav';
+
 export interface ExportSettings {
   /** WITHOUT extension; the container supplies it — see CONTAINER in PLAN §7.3. */
   filename: string;
@@ -97,10 +113,26 @@ export interface ExportSettings {
   width: number;
   height: number;
   fps: number;
-  codec: 'h264' | 'h265' | 'prores';
+  /**
+   * ONE widened union rather than an orthogonal `kind` field, which would admit
+   * three illegal combinations every consumer would have to reject
+   * (AUDIO-FEATURES §2.2). `width`/`height`/`fps` stay required and valid even
+   * for an audio codec — see §2.4.
+   */
+  codec: VideoCodec | AudioCodec;
   quality: 'draft' | 'good' | 'best';
   range: 'entire' | 'inout';
 }
+
+/**
+ * THE discriminator. A VALUE export, like `CH`: `electron/export/graph.ts` and
+ * `electron/ipc/export.ts` import it at runtime, and PLAN §1.2 compiles this file
+ * into `dist-electron/src/types/api.js`, so it resolves there with no new build
+ * plumbing. A type predicate, so the false arm narrows `codec` to `VideoCodec`
+ * and `CODEC_SHAPE[req.codec]` is total without a cast.
+ */
+export const isAudioOnlyCodec = (c: ExportSettings['codec']): c is AudioCodec =>
+  c === 'aac' || c === 'mp3' || c === 'wav';
 
 /* ---- export errors — EXPORT §4 ------------------------------------------ */
 
@@ -216,6 +248,79 @@ export interface ExportBridge {
   onProgress(cb: (e: ExportProgressEvent) => void): () => void;
 }
 
+/* ---- data safety — SAFETY.md §1, §2 ------------------------------------- */
+
+/**
+ * Mirrored into main on every change so `win.on('close')` — which is synchronous
+ * and cannot read the renderer's store — can formulate its question with no
+ * round trip (SAFETY §1.3).
+ */
+export interface ProjectStateReport {
+  isDirty: boolean;
+  projectName: string;
+  /** false = never saved anywhere, so Save will need a path. */
+  hasPath: boolean;
+}
+
+/**
+ * Everything the open-guard dialog needs that only the renderer knows.
+ * `exporting` is deliberately NOT here: main computes it (SAFETY §1.9), and a
+ * field the only caller cannot compute would be hardcoded `false`.
+ */
+export interface DiscardQuestion {
+  projectName: string;
+  neverSaved: boolean;
+}
+
+/** Declared once, here. projectActions.ts imports these; it never redeclares them. */
+export type DiscardChoice = 'save' | 'discard' | 'cancel';
+export type CloseSaveOutcome = 'saved' | 'cancelled' | 'failed';
+/** 'abandon' is main-internal — produced by the §1.6 watchdog, never accepted off the wire. */
+export type CloseSaveResolution = CloseSaveOutcome | 'abandon';
+
+/** What the renderer sends. Main adds version, sessionId and savedAt. */
+export interface AutosavePayload {
+  /** Monotonic per renderer session, starting at 1. Orders writes against retirement (§2.6). */
+  seq: number;
+  /** The .veproj this project came from, or null when it has never been saved. */
+  projectPath: string | null;
+  projectName: string;
+  /** ISO 8601 of the last explicit save in this session; null if there has not been one. */
+  lastExplicitSaveAt: string | null;
+  /** Exactly what serializeProject() produces, with project.savedAt rewritten (§2.2). */
+  project: ProjectFile;
+}
+
+/** What is on disk. */
+export interface AutosaveSnapshot extends AutosavePayload {
+  version: 1;
+  sessionId: string;
+  /** ISO 8601, when this snapshot was written. Distinct from project.savedAt. */
+  savedAt: string;
+}
+
+/**
+ * `skipped` is not a failure: main declined the write because an export is
+ * running and the previous snapshot is younger than the export floor, or
+ * because the write was retired underneath it (§2.6).
+ */
+export type AutosaveWriteResult =
+  | { ok: true; skipped: false; at: number }
+  | { ok: true; skipped: true }
+  | { ok: false };
+
+/** The launch-time recovery offer (§2.3). */
+export interface RecoveryOffer {
+  sessionId: string;
+  projectName: string;
+  projectPath: string | null;
+  /** false when projectPath is set but no longer resolves to a file. */
+  projectPathExists: boolean;
+  savedAt: string;
+  /** Still passed through migrateProject in the renderer (§2.7). */
+  project: ProjectFile;
+}
+
 export interface EditorAPI {
   platform: 'win32' | 'darwin' | 'linux';
   window: {
@@ -282,6 +387,26 @@ export interface EditorAPI {
      * project. Returns its own unsubscribe.
      */
     onOpenRequest(cb: (path: string) => void): () => void;
+
+    /* ---- data safety (SAFETY.md §5). All optional, exactly as media.reveal is:
+       src/dev/fixtures.ts needs no change and dev:web keeps working, because
+       every call site feature-detects. ---------------------------------------- */
+
+    /** Mirrors dirty state into main so win.on('close') can answer synchronously. */
+    reportState?(report: ProjectStateReport): void;
+    /** Main is asking the renderer to save before a close completes. Returns its unsubscribe. */
+    onSaveRequest?(cb: (token: string) => void): () => void;
+    reportSaveResult?(token: string, outcome: CloseSaveOutcome): void;
+    /** Raises the native three-way question. Absent under dev:web ⇒ treat as 'discard'. */
+    confirmDiscard?(q: DiscardQuestion): Promise<DiscardChoice>;
+
+    autosaveWrite?(payload: AutosavePayload): Promise<AutosaveWriteResult>;
+    /** Idempotent: returns the held offer without consuming it (§2.7). */
+    autosaveRecoverable?(): Promise<RecoveryOffer | null>;
+    /** Retires THIS session's snapshot through `throughSeq` (§2.6). Fire-and-forget. */
+    autosaveRetire?(throughSeq: number): Promise<void>;
+    /** Answers a recovery offer from a PREVIOUS session. */
+    autosaveResolveOffer?(sessionId: string, how: 'restored' | 'discarded'): Promise<void>;
   };
   /**
    * PRESENT in Electron once electron/ipc/export.ts lands. Absent under dev:web,

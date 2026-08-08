@@ -51,6 +51,11 @@ export type ShortcutId =
   | 'view.zoomFit'
   | 'edit.marker'
   | 'edit.clearSelection'
+  // AUDIO-FEATURES §7.4. The clip context menu renders <ShortcutHint
+  // id="edit.detachAudio" />, which resolves through SHORTCUT_BY_ID and returns
+  // null for an unknown id — so without this row the menu would silently
+  // promise a key that does not exist.
+  | 'edit.detachAudio'
   | 'help.shortcuts';
 
 /** The name of the function `useShortcuts` dispatches to. One per registry row. */
@@ -81,6 +86,7 @@ export type ShortcutHandlerName =
   | 'zoomToFit'
   | 'addMarker'
   | 'clearSelection'
+  | 'detachAudio'
   | 'toggleShortcutOverlay';
 
 export interface ShortcutDef {
@@ -125,6 +131,9 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'edit.lift', keys: ['Delete'], label: 'Lift selection', scope: 'timeline', handler: 'lift' },
   { id: 'edit.ripple', keys: ['Shift+Delete'], label: 'Ripple delete selection', scope: 'timeline', handler: 'rippleDelete' },
   { id: 'edit.marker', keys: ['M'], label: 'Add marker at playhead', scope: 'timeline', handler: 'addMarker' },
+  // Timeline-scoped like the other destructive-ish edits: Shift+D in the media
+  // rail must never restructure the timeline. Not repeatable — see below.
+  { id: 'edit.detachAudio', keys: ['Shift+D'], label: 'Detach audio', scope: 'timeline', handler: 'detachAudio' },
   { id: 'edit.undo', keys: ['Ctrl+Z'], label: 'Undo', scope: 'global', handler: 'undo' },
   { id: 'edit.redo', keys: ['Ctrl+Shift+Z'], label: 'Redo', scope: 'global', handler: 'redo' },
   { id: 'edit.clearSelection', keys: ['Escape'], label: 'Clear selection', scope: 'global', handler: 'clearSelection' },
@@ -141,7 +150,9 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   // Global, not 'dialog': it opens the export dialog, it does not act inside it.
   // Once the dialog is up `selectOverlayOpen` gates every non-dialog row out, so
   // Ctrl+E cannot re-fire against an export that is already on screen.
-  { id: 'file.export', keys: ['Ctrl+E'], label: 'Export video', scope: 'global', handler: 'openExportDialog' },
+  // 'Export', not 'Export video': the dialog now writes AAC, MP3 and WAV too
+  // (AUDIO-FEATURES §2.4). The dialog's own title already reads 'Export'.
+  { id: 'file.export', keys: ['Ctrl+E'], label: 'Export', scope: 'global', handler: 'openExportDialog' },
 
   // --- help ---------------------------------------------------------------
   { id: 'help.shortcuts', keys: ['?'], label: 'Show keyboard shortcuts', scope: 'global', handler: 'toggleShortcutOverlay' },

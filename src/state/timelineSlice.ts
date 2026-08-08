@@ -23,6 +23,7 @@ import type {
   Clip,
   ClipId,
   ClipProperties,
+  ClipStreams,
   Frames,
   Marker,
   MarkerId,
@@ -38,9 +39,12 @@ import {
   DEFAULT_CLIP_PROPERTIES,
   EMPTY_SELECTION,
   clipEnd,
+  clipHasVideo,
   clipSourceLength,
+  clipStreams,
 } from '../types/model';
 import type { SliceCreator, StoreState } from './types';
+import type { Notice } from './uiSlice';
 import { newId } from '../lib/id';
 import { framesToPx, pxToFramesExact } from '../lib/time';
 import {
@@ -120,6 +124,12 @@ export interface AddClipInput {
   duration?: Frames;
   /** Defaults to 0. */
   mediaIn?: Frames;
+  /** Defaults to undefined ≡ 'av'. Only `detachAudio` passes it. */
+  streams?: ClipStreams;
+  /** Defaults to the media's name, as today. Only `detachAudio` passes it. */
+  name?: string;
+  /** Defaults to `{ ...DEFAULT_CLIP_PROPERTIES }`, as today. Only `detachAudio` passes it. */
+  properties?: ClipProperties;
 }
 
 export interface TimelineActions {
@@ -138,6 +148,19 @@ export interface TimelineActions {
   trimClip(id: ClipId, edge: 'in' | 'out', nextFrame: Frames): MutationResult;
   /** Splits every selected clip, or every clip under the playhead when selection is empty. */
   splitAtPlayhead(): void;
+  /**
+   * Detach audio. Turns each eligible clip into a video-only clip and creates an
+   * audio-only twin on an audio track at the same start, duration and mediaIn.
+   *
+   * Operates on the ELIGIBLE SUBSET of `ids`, defaulting to the current selection —
+   * the same shape as `splitAtPlayhead`, and for the same reason: one command, one
+   * refusal, raised HERE rather than at the two call sites, so the menu item and
+   * the shortcut cannot explain themselves differently.
+   *
+   * The pair is INDEPENDENT afterwards (AUDIO-FEATURES §1.6). One history entry
+   * for the whole operation, including any tracks it had to create.
+   */
+  detachAudio(ids?: ClipId[]): void;
   /** Lift: leaves a gap. */
   deleteSelection(): void;
   /** Closes the gap on the affected tracks. */
@@ -313,8 +336,16 @@ function pruneSelection(selection: Selection, clips: Record<ClipId, Clip>): Sele
  */
 const isFiniteFrames = (v: number | undefined): boolean => v === undefined || Number.isFinite(v);
 
-/** The media kind a clip carries. Falls back to its track when the media is gone. */
+/**
+ * The media kind a clip carries. `streams` outranks the media; the track is the
+ * last resort (AUDIO-FEATURES §1.3). This is what makes a detached audio clip
+ * legal on an A-track and refused on a V-track, and it is the only placement
+ * rule — `addClip` consults the same fact through `wantKind`.
+ */
 export function clipKind(s: StoreState, clip: Clip): MediaKind {
+  const streams = clipStreams(clip);
+  if (streams === 'audio') return 'audio';
+  if (streams === 'video') return 'video';
   return s.items[clip.mediaId]?.kind ?? s.tracks[clip.trackId]?.kind ?? 'video';
 }
 
@@ -360,6 +391,32 @@ function overlapOnTrack(
     if (start < clipEnd(clip)) return id;
   }
   return null;
+}
+
+/**
+ * Where a detached audio twin goes (AUDIO-FEATURES §1.5). The same ladder
+ * `insertMediaAt` establishes: A1 first by `Track.index`, upward, skipping a
+ * locked lane and a lane already occupied at that range; a new audio track when
+ * nothing has room.
+ *
+ * It takes the store as an argument and `detachAudio` passes it a fresh `get()`
+ * on every iteration. There is deliberately NO `placed` array: `addClip` and
+ * `addTrack` both commit before they return, so a twin placed in iteration 1 IS
+ * an existing clip by iteration 2 and a track created in iteration 1 IS a
+ * candidate. Side bookkeeping would only duplicate what the store already knows.
+ */
+function findAudioHome(s: StoreState, clip: Clip): TrackId {
+  const candidates = tracksOfKind(s, 'audio').sort(
+    (a, b) => (s.tracks[a]?.index ?? 0) - (s.tracks[b]?.index ?? 0),
+  );
+  const end = clipEnd(clip);
+  for (const trackId of candidates) {
+    const track = s.tracks[trackId];
+    if (!track || track.locked) continue;
+    if (overlapOnTrack(s, trackId, clip.start, end, EMPTY_SELECTION)) continue;
+    return trackId;
+  }
+  return s.addTrack('audio');
 }
 
 /** The track ids of one kind, in trackOrder (top to bottom). */
@@ -547,13 +604,26 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const track = s.tracks[input.trackId];
       if (!track) return { ok: false, reason: 'no-track' };
       if (track.locked) return { ok: false, reason: 'locked' };
-      if (media && media.kind !== track.kind) return { ok: false, reason: 'kind-mismatch' };
+      // `streams` outranks the media, exactly as it does in `clipKind`: an
+      // audio-only clip cut from an .mp4 belongs on an A-track.
+      const wantKind: MediaKind =
+        input.streams === 'audio'
+          ? 'audio'
+          : input.streams === 'video'
+            ? 'video'
+            : (media?.kind ?? track.kind);
+      if (wantKind !== track.kind) return { ok: false, reason: 'kind-mismatch' };
 
       const start = Math.max(0, Math.round(input.start));
       const fallback = media?.durationFrames && media.durationFrames > 0 ? media.durationFrames : 1;
       const duration = Math.max(1, Math.round(input.duration ?? fallback));
       const mediaIn = Math.max(0, Math.round(input.mediaIn ?? 0));
 
+      // `name` and `properties` are applied HERE, above the two checks below, so
+      // `violatesSource` and `overlapOnTrack` evaluate the clip that will
+      // actually exist. A twin built at speed 1 and patched afterwards would be
+      // rescaled by `updateClipProperties` and come out the wrong length
+      // (AUDIO-FEATURES §1.3).
       const clip: Clip = {
         id: newId('c'),
         mediaId: input.mediaId,
@@ -561,8 +631,12 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
         start,
         duration,
         mediaIn,
-        name: media?.name ?? 'Clip',
-        properties: { ...DEFAULT_CLIP_PROPERTIES },
+        name: input.name ?? media?.name ?? 'Clip',
+        properties: input.properties ? { ...input.properties } : { ...DEFAULT_CLIP_PROPERTIES },
+        // Conditional, never `streams: input.streams` — §1.2 forbids writing an
+        // explicit 'av', and an `undefined`-valued key would still show up in an
+        // `in` check and a key count.
+        ...(input.streams !== undefined ? { streams: input.streams } : {}),
       };
 
       if (violatesSource(s, clip)) return { ok: false, reason: 'no-source' };
@@ -711,6 +785,68 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       // A split mints a new clip id, so the offline projection no longer covers
       // the clip set — same reason deleteSelection and rippleDelete recompute.
       get().recomputeOfflineClips();
+    },
+
+    detachAudio: (ids) => {
+      // Computed ONCE, before the transaction, so the eligible set is a stable
+      // snapshot and cannot grow or shrink under the loop. `findAudioHome`, by
+      // contrast, re-reads get() every pass — see its header.
+      const before = get();
+      const targets = selectDetachableClipIds(before, ids).map((id) => before.clips[id]);
+
+      if (targets.length === 0) {
+        get().setNotice(detachRefusal(before, ids));
+        return;
+      }
+
+      // Deterministic order, so an undo is reproducible: track index, then start.
+      targets.sort((a, b) => {
+        const byTrack =
+          (before.tracks[a.trackId]?.index ?? 0) - (before.tracks[b.trackId]?.index ?? 0);
+        return byTrack !== 0 ? byTrack : a.start - b.start;
+      });
+
+      get().beginHistory('Detach audio');
+      const detached: Clip[] = [];
+      let lastHome: TrackId | null = null;
+
+      for (const clip of targets) {
+        const trackId = findAudioHome(get(), clip);
+        lastHome = trackId;
+        const result = get().addClip({
+          mediaId: clip.mediaId,
+          trackId,
+          start: clip.start,
+          duration: clip.duration,
+          mediaIn: clip.mediaIn,
+          name: clip.name,
+          properties: clip.properties,
+          streams: 'audio',
+        });
+        if (!result.ok) {
+          // Documented as unreachable — step 4 of the ladder always yields an
+          // empty lane — but not assumed. abortHistory restores the snapshot AND
+          // removes any track this operation created, which is why the whole
+          // thing is one transaction.
+          get().abortHistory();
+          get().setNotice({
+            tone: 'danger',
+            title: 'Could not detach',
+            message: 'The detached audio could not be placed',
+          });
+          return;
+        }
+        detached.push({ ...clip, streams: 'video' });
+      }
+
+      set(withClips(docOf(get()), detached));
+      get().commitHistory();
+      // A detach mints new clip ids and `offlineClipIds` is keyed by CLIP id, so
+      // without this a twin cut from an offline source would render with no
+      // offline treatment beneath a picture half that shows all of it.
+      get().recomputeOfflineClips();
+      get().markDirty();
+      if (lastHome !== null) revealLane(get(), lastHome);
     },
 
     deleteSelection: () => {
@@ -1208,6 +1344,91 @@ export const selectDeletableClipIds = (s: StoreState): ClipId[] => {
   return out;
 };
 
+/**
+ * [UNSTABLE REFERENCE] readStore() only. THE eligibility rule for a detach, once
+ * (AUDIO-FEATURES §1.4). The context menu asks it to decide `disabled` +
+ * `disabledReason`; the action asks it to decide what to operate on, so the menu
+ * and the keystroke cannot explain themselves differently.
+ *
+ * Media STATUS is deliberately not consulted: an offline clip is still
+ * detachable, because the operation is purely structural and touches no file.
+ */
+export const selectDetachableClipIds = (s: StoreState, ids?: Iterable<ClipId>): ClipId[] => {
+  const out: ClipId[] = [];
+  for (const id of ids ?? s.selection) {
+    const clip = s.clips[id];
+    if (!clip) continue;
+    if (clipStreams(clip) !== 'av') continue; // already detached, or already audio-only
+    const track = s.tracks[clip.trackId];
+    if (!track || track.kind !== 'video' || track.locked) continue;
+    if (s.items[clip.mediaId]?.hasAudio !== true) continue;
+    out.push(id);
+  }
+  return out;
+};
+
+/**
+ * Why a detach found nothing to do, in the four sentences AUDIO-FEATURES §1.4
+ * pins, checked in that order. Exported because the context menu shows the same
+ * sentence as the item's `disabledReason` — one copy of the copy.
+ */
+export function detachRefusal(s: StoreState, ids?: Iterable<ClipId>): Notice {
+  const candidates: Clip[] = [];
+  for (const id of ids ?? s.selection) {
+    const clip = s.clips[id];
+    if (clip) candidates.push(clip);
+  }
+  if (candidates.length === 0) {
+    return { tone: 'warning', title: 'Nothing to detach', message: 'Select a video clip first' };
+  }
+  const onVideo = candidates.filter((c) => s.tracks[c.trackId]?.kind === 'video');
+  if (onVideo.length > 0 && onVideo.every((c) => s.tracks[c.trackId]?.locked === true)) {
+    return { tone: 'warning', title: 'Could not detach', message: 'Track is locked' };
+  }
+  const unlocked = onVideo.filter((c) => s.tracks[c.trackId]?.locked !== true);
+  if (
+    unlocked.length > 0 &&
+    unlocked.every((c) => clipStreams(c) === 'av' && s.items[c.mediaId]?.hasAudio !== true)
+  ) {
+    return {
+      tone: 'warning',
+      title: 'Could not detach',
+      message: 'Those clips have no audio to detach',
+    };
+  }
+  return {
+    tone: 'warning',
+    title: 'Nothing to detach',
+    message: 'Select a video clip that still has its audio',
+  };
+}
+
+/**
+ * Brings a lane fully into the lane viewport's vertical range, by the minimum
+ * distance, through the store's own scroll path — the twin appears on a lane
+ * below, and a twin the user cannot see is a silent success.
+ *
+ * Vertical only: the twin sits at the same start as the clip it came from, so
+ * the horizontal position is already wherever the user was looking. It lives
+ * here rather than in the interaction layer because the menu item and the
+ * keyboard binding both enter through this action, and a reveal implemented at
+ * one call site would be missing from the other.
+ */
+function revealLane(s: StoreState, trackId: TrackId): void {
+  if (typeof document === 'undefined') return;
+  const viewport = document.querySelector<HTMLElement>('[data-lane-viewport]');
+  if (!viewport) return;
+  const top = selectLaneTop(s, trackId);
+  const bottom = top + (s.tracks[trackId]?.height ?? 0);
+  const view = viewport.clientHeight;
+  if (view <= 0) return;
+  let y = s.scrollY;
+  if (top < s.scrollY) y = Math.max(0, top);
+  else if (bottom > s.scrollY + view) y = bottom - view;
+  if (y === s.scrollY) return;
+  s.setScroll(s.scrollX, Math.min(y, Math.max(0, selectLaneHeight(s) - view)));
+}
+
 /** [stable] */
 export const selectIsSelected = (s: StoreState, id: ClipId): boolean => s.selection.has(id);
 
@@ -1246,7 +1467,10 @@ export const selectVideoClipIdAtFrame = (s: StoreState, frame: Frames): ClipId |
     const i = lastStartingAtOrBefore(ids, s.clips, frame);
     if (i < 0) continue;
     const clip = s.clips[ids[i]];
-    if (clip && frame < clipEnd(clip)) return clip.id;
+    // `clipHasVideo` is defensive here: §1.3 makes an audio-only clip illegal on
+    // a video track. A hand-edited .veproj, or a future action that forgets,
+    // would otherwise have the preview compositing a clip that has no picture.
+    if (clip && frame < clipEnd(clip) && clipHasVideo(clip)) return clip.id;
   }
   return null;
 };
@@ -1299,7 +1523,9 @@ export const selectNextVideoClipIdAfter = (s: StoreState, frame: Frames): ClipId
     if (!ids) continue;
     const i = lastStartingAtOrBefore(ids, s.clips, frame);
     const candidate = s.clips[ids[i + 1]];
-    if (candidate && (best === null || candidate.start < best.start)) best = candidate;
+    if (candidate && clipHasVideo(candidate) && (best === null || candidate.start < best.start)) {
+      best = candidate;
+    }
   }
   return best ? best.id : null;
 };

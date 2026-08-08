@@ -20,6 +20,7 @@ import './preview.css';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, MutableRefObject, ReactElement } from 'react';
 import { readStore, useEditorStore } from '../../state/store';
+import { clipHasAudio } from '../../types/model';
 import { framesToSeconds, framesToTimecode } from '../../lib/time';
 import { SHUTTLE_REVERSE_MAX_SEEKS_PER_SEC } from '../../lib/constants';
 import { selectNextVideoClipIdAfter, selectVideoClipIdAtFrame } from '../../state/timelineSlice';
@@ -237,7 +238,13 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
   /* ----------------------------------------------------- element transport */
 
   const speed = clip?.properties.speed ?? 1;
-  const clipVolume = clip?.properties.volume ?? 1;
+  // The clock clip's audio is carried by the <video> element and by nothing else
+  // (AUDIO-MONITOR §2.3). A video-only clip must therefore reach the gain law as
+  // volume 0, or the detached half is heard from the element that draws it.
+  // Written here rather than inside `effectiveGain`, which is the gain LAW and is
+  // asserted against a table of scalars — a clip-shaped argument would make that
+  // assertion untestable.
+  const clipVolume = clip !== null && clipHasAudio(clip) ? clip.properties.volume : 0;
   const trackMuted = useEditorStore(
     useCallback((s) => (clip ? (s.tracks[clip.trackId]?.muted ?? false) : false), [clip]),
   );

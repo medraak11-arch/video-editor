@@ -15,11 +15,18 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import { CH } from '../src/types/api';
 import type {
+  AutosavePayload,
+  AutosaveWriteResult,
+  CloseSaveOutcome,
+  DiscardChoice,
+  DiscardQuestion,
   EditorAPI,
   ExportProgressEvent,
   ExportRequest,
   OpenResult,
   ProbeResult,
+  ProjectStateReport,
+  RecoveryOffer,
   RenameResult,
   SaveResult,
 } from '../src/types/api';
@@ -77,6 +84,23 @@ const api: EditorAPI = {
       ipcRenderer.send(CH.projectOpenPath);
       return stop;
     },
+
+    /* ---- data safety — SAFETY.md §9.2. No logic, no fs. ------------------ */
+
+    reportState: (report: ProjectStateReport) => ipcRenderer.send(CH.appProjectState, report),
+    onSaveRequest: (cb) => subscribe<string>(CH.appSaveRequest, cb),
+    reportSaveResult: (token: string, outcome: CloseSaveOutcome) =>
+      ipcRenderer.send(CH.appSaveResult, token, outcome),
+    confirmDiscard: (q: DiscardQuestion) =>
+      ipcRenderer.invoke(CH.appConfirmDiscard, q) as Promise<DiscardChoice>,
+    autosaveWrite: (payload: AutosavePayload) =>
+      ipcRenderer.invoke(CH.autosaveWrite, payload) as Promise<AutosaveWriteResult>,
+    autosaveRecoverable: () =>
+      ipcRenderer.invoke(CH.autosaveRecoverable) as Promise<RecoveryOffer | null>,
+    autosaveRetire: (throughSeq: number) =>
+      ipcRenderer.invoke(CH.autosaveRetire, throughSeq) as Promise<void>,
+    autosaveResolveOffer: (id: string, how: 'restored' | 'discarded') =>
+      ipcRenderer.invoke(CH.autosaveResolve, id, how) as Promise<void>,
   },
 
   // Adding this member is what flips `getEditorAPI().export ?? exportStub` to the

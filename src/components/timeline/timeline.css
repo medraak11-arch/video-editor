@@ -643,6 +643,25 @@
   z-index: var(--z-marquee);
 }
 
+/* -------------------------------------------------------- context menu anchor
+   The clip context menu opens from a zero-size button parked at the pointer, so
+   one shared popover can open where the user clicked. `display: contents` keeps
+   the host out of the lane's own layout entirely. */
+
+.tl-clip-menu-host {
+  display: contents;
+}
+
+.tl-clip-menu-anchor {
+  position: fixed;
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
 /* Icon + word + colour, in that order. The badge never relies on hue alone. */
 .tl-drag-badge {
   position: absolute;

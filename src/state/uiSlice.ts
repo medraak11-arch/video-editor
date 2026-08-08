@@ -15,6 +15,7 @@
    this module must not import the store (store.ts imports this file).
 --------------------------------------------------------------------------- */
 
+import type { RecoveryOffer } from '../types/api';
 import type { ProjectFile } from '../types/model';
 import type { SliceCreator, StoreState } from './types';
 import {
@@ -78,6 +79,13 @@ export interface UiState {
   shortcutOverlayOpen: boolean;
   /** The titlebar notice slot. null = nothing to say. */
   notice: Notice | null;
+  /* ---- autosave status (SAFETY.md §3). Session-only, never persisted. ---- */
+  /** Date.now() of the last successful snapshot, or null if none this session. */
+  autosaveAt: number | null;
+  /** Consecutive autosave failures. 0 = healthy. Drives the §2.9 escalation. */
+  autosaveFailures: number;
+  /** The launch-time recovery offer, or null once answered. */
+  recovery: RecoveryOffer | null;
 }
 
 export interface UiActions {
@@ -98,6 +106,13 @@ export interface UiActions {
   setShortcutOverlayOpen(open: boolean): void;
   /** Replaces whatever notice is showing. Any slice may call it. */
   setNotice(n: Notice | null): void;
+  /* ---- autosave status. All four are explicitly NOT dirty (PLAN §3.1). ---- */
+  /** Sets autosaveAt and resets autosaveFailures to 0. */
+  noteAutosaveWritten(at: number): void;
+  /** Increments autosaveFailures. NEVER raises the notice itself — that is §2.9's caller. */
+  noteAutosaveFailed(): void;
+  setRecoveryOffer(offer: RecoveryOffer): void;
+  clearRecoveryOffer(): void;
   /** Called by applyProject. */
   hydrateUi(p: Pick<ProjectFile, 'name'>): void;
 }
@@ -215,6 +230,9 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => {
     exportDialogOpen: false,
     shortcutOverlayOpen: false,
     notice: null,
+    autosaveAt: null,
+    autosaveFailures: 0,
+    recovery: null,
 
     setTheme: (theme) => {
       if (get().theme === theme) return;
@@ -288,6 +306,23 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => {
 
     setNotice: (notice) => set({ notice }),
 
+    // Writing a snapshot is not saving: none of these four touches isDirty,
+    // projectPath or projectName, and none is on the markDirty caller list
+    // (PLAN §3.1, SAFETY §2.10).
+    noteAutosaveWritten: (at) => {
+      if (get().autosaveAt === at && get().autosaveFailures === 0) return;
+      set({ autosaveAt: at, autosaveFailures: 0 });
+    },
+
+    noteAutosaveFailed: () => set({ autosaveFailures: get().autosaveFailures + 1 }),
+
+    setRecoveryOffer: (recovery) => set({ recovery }),
+
+    clearRecoveryOffer: () => {
+      if (get().recovery === null) return;
+      set({ recovery: null });
+    },
+
     hydrateUi: (p) => set({ projectName: p.name, isDirty: false, notice: null }),
   };
 };
@@ -301,3 +336,9 @@ export const selectInspectorVisible = (s: StoreState): boolean =>
 /** [stable] Any overlay that swallows the keyboard. Drives PLAN §8.10 scope gating. */
 export const selectOverlayOpen = (s: StoreState): boolean =>
   s.exportDialogOpen || s.shortcutOverlayOpen;
+
+/** [stable] */
+export const selectAutosaveHealthy = (s: StoreState): boolean => s.autosaveFailures === 0;
+
+/** [stable] */
+export const selectHasRecovery = (s: StoreState): boolean => s.recovery !== null;

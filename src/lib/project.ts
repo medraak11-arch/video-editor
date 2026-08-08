@@ -9,12 +9,14 @@
 
 import type {
   Clip,
+  ClipStreams,
   Marker,
   MediaItem,
   PersistedMediaItem,
   ProjectFile,
   Track,
 } from '../types/model';
+import type { AutosavePayload } from '../types/api';
 import type { StoreState } from '../state/types';
 import { readStore } from '../state/store';
 
@@ -77,12 +79,61 @@ export function applyProject(p: ProjectFile): void {
   });
 }
 
+/* --------------------------------------------------------------- autosave
+   SAFETY.md §2.4. Three numbers with exactly one consumer, the scheduler in
+   src/keyboard/projectActions.ts. The 60 s export floor is NOT here: it is
+   enforced by main, because main is the only side that knows a job is live. */
+
+/** Quiet-period debounce: nothing is written until editing has stopped this long. */
+export const AUTOSAVE_IDLE_MS = 2_000;
+/** Hard ceiling on exposure while there are unsaved changes. */
+export const AUTOSAVE_MAX_INTERVAL_MS = 20_000;
+/** Scheduler granularity. */
+export const AUTOSAVE_TICK_MS = 500;
+
+/**
+ * Pure. The caller owns `seq` and `lastExplicitSaveAt`; this only assembles them
+ * with `serializeProject(s)`.
+ *
+ * `project.savedAt` is overwritten because `serializeProject` stamps it with
+ * `Date.now()` at serialize time — a snapshot taken verbatim would claim the
+ * project was SAVED at a moment when nothing was saved, and a hand-lifted
+ * `.veproj` would carry that claim into the user's own file (SAFETY §2.2). The
+ * value it takes instead means "the last time these bytes were on disk in a
+ * file the user chose", falling back to the snapshot time for a project that
+ * has never been saved — which is true of the hand-lifted file itself.
+ */
+export function toAutosavePayload(
+  s: StoreState,
+  meta: { seq: number; lastExplicitSaveAt: string | null },
+): AutosavePayload {
+  const takenAt = new Date().toISOString();
+  return {
+    seq: meta.seq,
+    projectPath: s.projectPath,
+    projectName: s.projectName,
+    lastExplicitSaveAt: meta.lastExplicitSaveAt,
+    project: { ...serializeProject(s), savedAt: meta.lastExplicitSaveAt ?? takenAt },
+  };
+}
+
 /* ------------------------------------------------------------- validation */
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+/**
+ * A SANITISER, not a validator — AUDIO-FEATURES §1.2. `'av'`, an absent key and
+ * anything unknown all collapse to `undefined`, which `clipStreams` reads as
+ * `'av'`. Dropping a whole clip because a hand-edited file says `"streams":"audi"`
+ * would lose the user's edit over a typo, and `describeProjectProblem` has no
+ * sentence for it. `validClip` deliberately does not inspect `streams`: a
+ * pre-feature `.veproj` must validate unchanged.
+ */
+const streamsOf = (v: unknown): ClipStreams | undefined =>
+  v === 'video' || v === 'audio' ? v : undefined;
 
 function validClip(v: unknown): v is Clip {
   if (!isObject(v)) return false;
@@ -179,7 +230,22 @@ export function migrateProject(raw: unknown): ProjectFile | null {
     media: raw.media.filter(validMedia),
     tracks,
     trackOrder,
-    clips: raw.clips.filter(validClip).filter((c) => trackIds.has(c.trackId)),
+    // The map returns the ORIGINAL object unless the key is actually wrong, so an
+    // untouched project allocates no new clip records on open (§1.2).
+    clips: raw.clips
+      .filter(validClip)
+      .filter((c) => trackIds.has(c.trackId))
+      .map((c) => {
+        const value = (c as { streams?: unknown }).streams;
+        // Absent (every legacy clip), or already 'video'/'audio': `c` is correct as-is.
+        if (value === undefined || streamsOf(value) !== undefined) return c;
+        // Explicit 'av', or garbage from a hand-edited file: DROP the key. Leaving
+        // it would hand the bad value straight to `clipStreams`, whose `??` only
+        // catches null/undefined — `detachAudio`'s `!== 'av'` guard would then skip
+        // the clip forever, and the next save would persist the garbage.
+        const { streams: _drop, ...rest } = c;
+        return rest;
+      }),
     markers: Array.isArray(raw.markers) ? raw.markers.filter(validMarker) : [],
     savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
   };

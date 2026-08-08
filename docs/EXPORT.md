@@ -133,8 +133,25 @@ const F  = doc.fps;   // PROJECT rate. The unit every frame field in the DOCUMEN
 const OF = out.fps;   // OUTPUT rate. The rate the base, every clip chain and the encoder RUN at.
 ```
 
-**`F` is the rate for *reading* the document. `OF` is the rate for *emitting* the graph.** Nothing
-in the emitted graph runs at `F`. The base canvas, `fps=fps=`, every `enable` window, every
+**Amendment A2 — audio-only codecs (docs/AUDIO-FEATURES.md §0.2, §2.7).** For `aac`, `mp3` and `wav`
+there is no video stream, so there is **no output frame grid**, and `req.fps` is a stale value
+retained from whenever the user last chose a video format. `OF` therefore becomes `F`:
+
+```ts
+const OF = isAudioOnlyCodec(req.codec) ? F : req.fps;
+```
+
+This is a correctness fix, not a preference. Left as `req.fps` it quantises `adelay` onto a grid
+that does not exist: project `F = 30`, retained `req.fps = 24`, a clip at project frame `S = 7`
+gives `nStart = round((7/30) × 24) = 6` and `startMs = round((6/24) × 1000) = 250 ms`, where the
+correct answer is `round((7/30) × 1000) = 233 ms` — **17 ms early, audibly.** With `OF = F`, `toOut`
+is the identity, `nStart === S`, and there is no quantisation at all. `durationSeconds =
+durationFrames / F` is unchanged, and remains both the `-t` value and the §2 progress denominator.
+
+**`F` is the rate for *reading* the document. `OF` is the rate for *emitting* the graph.** For a
+video codec nothing in the emitted graph runs at `F`; for an audio-only codec the two are the same
+number by A2 above, which is not an exception to the rule so much as the degenerate case of it. The
+base canvas, `fps=fps=`, every `enable` window, every
 `setpts` shift, every `adelay`, and `-r` are all on the `OF` grid. Mixing the two is the specific
 defect that produced a 2-frame / 83 ms picture-against-sound slip on a 30-project/24-export run
 while `adelay` stayed exact — invisible in a frame count, audible as desync.
@@ -662,7 +679,8 @@ can be exercised without a browser.
 
 ### 1.10 Encoder settings, and the composite pixel format
 
-`CONTAINER` (PLAN §7.3) already maps codec → extension: `h264: mp4`, `h265: mp4`, `prores: mov`.
+`CONTAINER` (PLAN §7.3) already maps codec → extension: `h264: mp4`, `h265: mp4`, `prores: mov`,
+`aac: m4a`, `mp3: mp3`, `wav: wav`.
 
 **The pixel format is a function of the codec in four places, not one.** The base's terminal
 `format`, the per-clip `format`, `overlay`'s `format` option and the encoder's `-pix_fmt` must all
@@ -685,11 +703,30 @@ member, `yuva422p10le` is a legal pix_fmt, and the full graph encodes to
 | `h265` | `-c:v libx265 -pix_fmt yuv420p -preset <P> -crf <C> -tag:v hvc1` | `-c:a aac -b:a 192k -ar 48000 -ac 2` | `-f mp4 -movflags +faststart` |
 | `prores` | `-c:v prores_ks -profile:v <N> -pix_fmt yuv422p10le -vendor apl0` | `-c:a pcm_s16le -ar 48000 -ac 2` | `-f mov` |
 
-| quality | x264 preset / crf | x265 preset / crf | prores profile |
+The three **audio-only** codecs (docs/AUDIO-FEATURES.md §2.3) emit no video argument at all — no
+`-c:v`, no `-pix_fmt`, no `-r`. They are an explicit arm rather than a fall-through: ProRes used to
+own the final `else`, and a widened union would otherwise have sent `wav` into `-c:v prores_ks`.
+
+| codec | video args | audio args | container |
 |---|---|---|---|
-| `draft` | `veryfast` / `28` | `veryfast` / `32` | `0` (proxy) |
-| `good` | `medium` / `20` | `medium` / `24` | `2` (422) |
-| `best` | `slow` / `16` | `slow` / `20` | `3` (422 HQ) |
+| `aac` | — | `-c:a aac -b:a <B> -ar 48000 -ac 2` | `-f mp4 -movflags +faststart` |
+| `mp3` | — | `-c:a libmp3lame -b:a <B> -ar 48000 -ac 2` | `-f mp3` |
+| `wav` | — | `-c:a <PCM> -ar 48000 -ac 2` | `-f wav` |
+
+`-f mp4` for `.m4a` is correct and verified: `.m4a` *is* the mp4 container, and `-map [aout]` alone
+is what makes the file audio-only. `+faststart` is therefore free and is kept for `aac`; it is
+meaningless for `mp3` and `wav` and is not passed.
+
+| quality | x264 preset / crf | x265 preset / crf | prores profile | `aac` `-b:a` | `mp3` `-b:a` | `wav` `-c:a` |
+|---|---|---|---|---|---|---|
+| `draft` | `veryfast` / `28` | `veryfast` / `32` | `0` (proxy) | `128k` | `128k` | `pcm_s16le` |
+| `good` | `medium` / `20` | `medium` / `24` | `2` (422) | `192k` | `192k` | `pcm_s16le` |
+| `best` | `slow` / `16` | `slow` / `20` | `3` (422 HQ) | `256k` | `320k` | `pcm_s24le` |
+
+`good` at `192k` is deliberately the same number the h264/h265 paths pass, so an audio-only export
+of a timeline sounds identical to the audio track of a video export of it — which makes a regression
+in one visible against the other. WAV's `best` being 24-bit is not decoration: a lossless handoff
+into a mixing tool is why someone picks WAV.
 
 `libx264`, `libx265` and `prores_ks` are all present in the verified build. `-r <OF>` is always
 passed. `-tag:v hvc1` is what makes an h265 mp4 openable by QuickTime and Finder preview.

@@ -44,12 +44,18 @@ exist because monitoring happens in a browser engine rather than in ffmpeg:
 
 ```ts
 const monitorAudible = (clip: Clip, track: Track, media: MediaItem): boolean =>
+  clipHasAudio(clip) &&            // docs/AUDIO-FEATURES.md §1.7.2
   media.status === 'ready' &&      // monitoring only; see §1.3 row 9
   media.url !== '' &&              // monitoring only; see §1.3 row 9
   media.hasAudio &&
   !track.muted &&
   clip.properties.volume > 0;
 ```
+
+`clipHasAudio` is first because it is the cheapest and the most decisive. It enters the **export**
+predicate in the same change and with the same meaning (AUDIO-FEATURES §1.7.3), so the mirror this
+section describes is preserved rather than broken. Without it a detached pair is audible twice: once
+from the `<video>` element carrying the picture half, once from the twin's own voice.
 
 Compare, field for field, against the export graph:
 
@@ -929,7 +935,9 @@ itself rather than discovering the ceiling:
 **`MAX_AUDIBLE_SOURCES = 8` concurrently *playing* elements**, the `<video>` counting as one.
 Priority, applied every time the audible set changes:
 
-1. The clock clip (always — it is the picture's own sound).
+1. The clock clip — always, **when it has one**. A video-only clip (the picture half left behind by
+   a detach) carries no sound and takes no slot; the freed slot goes to the next clip in priority
+   order rather than being spent on silence.
 2. Audio-track clips, in `trackOrder` order.
 3. Remaining video-track clips, in `trackOrder` order.
 

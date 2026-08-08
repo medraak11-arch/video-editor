@@ -18,8 +18,15 @@ import type {
   ExportErrorCode,
   ExportRequest,
   ExportSource,
+  VideoCodec,
 } from '../../src/types/api';
+import { isAudioOnlyCodec } from '../../src/types/api';
 import type { Clip } from '../../src/types/model';
+// A VALUE import, not a type one. It resolves at runtime because
+// tsconfig.electron.json already compiles src/types/model.ts into
+// dist-electron/src/types/model.js — the same mechanism that makes `CH` work.
+// model.ts has no React, no DOM and no node import, which is what permits it.
+import { clipHasAudio, clipHasVideo } from '../../src/types/model';
 
 /* --------------------------------------------------------------- §4 errors
    One frozen table so a message is written once. graph.ts owns it because it is
@@ -113,6 +120,11 @@ export const CONTAINER: Record<ExportRequest['codec'], string> = {
   h264: 'mp4',
   h265: 'mp4',
   prores: 'mov',
+  // `.m4a` IS the mp4 container; `-f mp4` is what was verified, and `-map [aout]`
+  // alone is what makes the file audio-only.
+  aac: 'm4a',
+  mp3: 'mp3',
+  wav: 'wav',
 };
 
 interface CodecShape {
@@ -124,10 +136,28 @@ interface CodecShape {
   overlayFmt: string;
 }
 
-const CODEC_SHAPE: Record<ExportRequest['codec'], CodecShape> = {
+/**
+ * NARROWED to `VideoCodec`, so there is no row to invent for an audio codec.
+ * An invented `basePixFmt` for `wav` would compile, emit a `[vout]` label, and
+ * ffmpeg would then fail on an unconnected filtergraph output.
+ */
+const CODEC_SHAPE: Record<VideoCodec, CodecShape> = {
   h264: { basePixFmt: 'yuv420p', clipPixFmt: 'yuva420p', overlayFmt: 'yuv420' },
   h265: { basePixFmt: 'yuv420p', clipPixFmt: 'yuva420p', overlayFmt: 'yuv420' },
   prores: { basePixFmt: 'yuv422p10le', clipPixFmt: 'yuva422p10le', overlayFmt: 'yuv422p10' },
+};
+
+/** The `-b:a` argument for an audio-only export. Mirrors `AUDIO_BITRATE_KBPS`. */
+const AUDIO_BITRATE: Record<'aac' | 'mp3', Record<ExportRequest['quality'], string>> = {
+  aac: { draft: '128k', good: '192k', best: '256k' },
+  mp3: { draft: '128k', good: '192k', best: '320k' },
+};
+
+/** WAV's `-c:a`. `best` is 24-bit because a lossless handoff is what WAV is for. */
+const WAV_PCM: Record<ExportRequest['quality'], string> = {
+  draft: 'pcm_s16le',
+  good: 'pcm_s16le',
+  best: 'pcm_s24le',
 };
 
 const X264: Record<ExportRequest['quality'], { preset: string; crf: string }> = {
@@ -237,8 +267,16 @@ export function buildExportGraph(
   const doc: ExportDocument | undefined = req.document;
   if (!doc) return { ok: false, error: ERR['empty-timeline'] };
 
+  const audioOnly = isAudioOnlyCodec(req.codec);
+
   const F = doc.fps; // PROJECT rate. The unit every frame field in the DOCUMENT is in.
-  const OF = req.fps; // OUTPUT rate. What the base, every clip chain and the encoder RUN at.
+  // OUTPUT rate. What the base, every clip chain and the encoder RUN at — except
+  // that an audio-only export has NO output frame grid, and `req.fps` is a
+  // retained value from whenever the user last picked a video format. Leaving
+  // OF = req.fps there would quantise `adelay` onto a grid that no longer
+  // exists: a clip at project frame 7 of a 30 fps project, with a retained 24,
+  // lands 17 ms early. This is amendment A2 to EXPORT §1.3.
+  const OF = audioOnly ? F : req.fps;
   if (!(F > 0) || !(OF > 0)) return { ok: false, error: ERR['empty-timeline'] };
 
   const startFrame = req.startFrame;
@@ -247,7 +285,11 @@ export function buildExportGraph(
 
   const rangeEnd = startFrame + durationFrames;
   const durationSeconds = durationFrames / F; // base d=, output -t, §2 denominator
-  const framesTotal = Math.max(1, Math.round(durationSeconds * OF));
+  // 0 is the honest answer to "how many OUTPUT frames" for a file that has none,
+  // and it is what `ExportProgressEvent.framesTotal` documents itself as. It has
+  // to be made rather than assumed: `runJob` assigns this over its own
+  // pre-flight estimate, so without it the dialog is back to a fabricated count.
+  const framesTotal = audioOnly ? 0 : Math.max(1, Math.round(durationSeconds * OF));
 
   const toOut = (projectFrame: number): number => Math.round((projectFrame / F) * OF);
 
@@ -283,9 +325,20 @@ export function buildExportGraph(
       const nStart = toOut(S); // output frame index of the clip's first frame
       const nEnd = toOut(E); // output frame index one past its last
 
+      // Forcing the video predicate false empties the two chain loops — it is
+      // necessary and NOT sufficient; four constructs sit outside them and each
+      // gets its own branch below.
       const wantsVideo =
-        track.kind === 'video' && track.visible && props.opacity > 0 && nEnd > nStart;
-      const wantsAudio = !track.muted && props.volume > 0;
+        !audioOnly &&
+        track.kind === 'video' &&
+        track.visible &&
+        props.opacity > 0 &&
+        nEnd > nStart &&
+        clipHasVideo(clip);
+      // `streams` is a property of the EDIT, like `volume` and `muted`, so it
+      // belongs here and not in `contributesAudio`, where `hasAudio` — a
+      // property of the FILE — stays on its own.
+      const wantsAudio = !track.muted && props.volume > 0 && clipHasAudio(clip);
       if (!wantsVideo && !wantsAudio) continue; // no input, no chain, no overlay
 
       const source = sourceById.get(clip.mediaId);
@@ -319,7 +372,11 @@ export function buildExportGraph(
     }
   }
 
-  if (collected.length === 0) return { ok: false, error: ERR['empty-timeline'] };
+  // For an audio-only export an empty contributor set is a SILENT FILE, not an
+  // error. The `durationFrames >= 1` check above already caught the genuinely
+  // empty request; what is left here is a range that contains picture and no
+  // sound — every track muted, every volume 0 — which is an ordinary edit.
+  if (collected.length === 0 && !audioOnly) return { ok: false, error: ERR['empty-timeline'] };
 
   /* -- §1.4 input assignment: two passes, and the order is normative --------- */
 
@@ -337,47 +394,61 @@ export function buildExportGraph(
 
   /* ---------------------------------------------------------- §1.2 the graph */
 
-  const shape = CODEC_SHAPE[req.codec];
+  // No cast. `isAudioOnlyCodec` is a type predicate, so its false arm gives
+  // `req.codec` the type `VideoCodec` and the index is total. It is called
+  // directly rather than through the `audioOnly` alias because aliased
+  // narrowing of a dotted name does not reach here — and the fix for that is to
+  // restore the narrowing, never to add `as VideoCodec`, which would put back
+  // exactly the runtime hole the narrowed CODEC_SHAPE is closing.
+  const shape: CodecShape | null = isAudioOnlyCodec(req.codec) ? null : CODEC_SHAPE[req.codec];
   const lines: string[] = [];
 
-  lines.push(
-    `color=c=black:s=${req.width}x${req.height}:r=${rate(OF)}:d=${sec(durationSeconds)},` +
-      `format=${shape.basePixFmt}[vbase]`,
-  );
+  // The whole video half. `[vbase]` and the terminal `[vout]` sit OUTSIDE the
+  // two loops, so an empty contributor list does not suppress them — left alone,
+  // the terminal line dereferences a null shape and the throw reaches the user
+  // as "the encoder could not be started" for a perfectly valid WAV request.
+  if (shape !== null) {
+    lines.push(
+      `color=c=black:s=${req.width}x${req.height}:r=${rate(OF)}:d=${sec(durationSeconds)},` +
+        `format=${shape.basePixFmt}[vbase]`,
+    );
+  }
   lines.push(
     `anullsrc=channel_layout=stereo:sample_rate=48000,` +
       `atrim=duration=${sec(durationSeconds)},asetpts=N/SR/TB[abase]`,
   );
 
-  // §1.5 — per-clip video chains, in input order.
-  const videoContributors = inputs.filter((c) => c.contributesVideo);
-  for (const c of videoContributors) {
-    const p = c.clip.properties;
-    lines.push(
-      `[${c.input}:v]setpts=(PTS-STARTPTS)/${fac(p.speed)},` +
-        `fps=fps=${rate(OF)},` +
-        `scale=${c.tw}:${c.th}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bicubic,` +
-        `setsar=1,` +
-        `format=${shape.clipPixFmt},` +
-        `colorchannelmixer=aa=${fac(p.opacity)},` +
-        `setpts=PTS+${sec(c.startSec)}/TB[v${c.input}]`,
-    );
-  }
+  if (shape !== null) {
+    // §1.5 — per-clip video chains, in input order.
+    const videoContributors = inputs.filter((c) => c.contributesVideo);
+    for (const c of videoContributors) {
+      const p = c.clip.properties;
+      lines.push(
+        `[${c.input}:v]setpts=(PTS-STARTPTS)/${fac(p.speed)},` +
+          `fps=fps=${rate(OF)},` +
+          `scale=${c.tw}:${c.th}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bicubic,` +
+          `setsar=1,` +
+          `format=${shape.clipPixFmt},` +
+          `colorchannelmixer=aa=${fac(p.opacity)},` +
+          `setpts=PTS+${sec(c.startSec)}/TB[v${c.input}]`,
+      );
+    }
 
-  // §1.6 — track order is overlay order; each clip consumes the previous composite.
-  let composite = 'vbase';
-  videoContributors.forEach((c, i) => {
-    const p = c.clip.properties;
-    const next = `vc${i}`;
-    lines.push(
-      `[${composite}][v${c.input}]overlay=` +
-        `x=(W-w)/2${offset(p.positionX)}:y=(H-h)/2${offset(p.positionY)}:` +
-        `eof_action=pass:shortest=0:repeatlast=0:format=${shape.overlayFmt}:` +
-        `enable='gte(t,${sec(c.enableFrom)})*lt(t,${sec(c.enableTo)})'[${next}]`,
-    );
-    composite = next;
-  });
-  lines.push(`[${composite}]format=${shape.basePixFmt}[vout]`);
+    // §1.6 — track order is overlay order; each clip consumes the previous composite.
+    let composite = 'vbase';
+    videoContributors.forEach((c, i) => {
+      const p = c.clip.properties;
+      const next = `vc${i}`;
+      lines.push(
+        `[${composite}][v${c.input}]overlay=` +
+          `x=(W-w)/2${offset(p.positionX)}:y=(H-h)/2${offset(p.positionY)}:` +
+          `eof_action=pass:shortest=0:repeatlast=0:format=${shape.overlayFmt}:` +
+          `enable='gte(t,${sec(c.enableFrom)})*lt(t,${sec(c.enableTo)})'[${next}]`,
+      );
+      composite = next;
+    });
+    lines.push(`[${composite}]format=${shape.basePixFmt}[vout]`);
+  }
 
   // §1.7 — per-clip audio chains, keyed to the INPUT index, ascending.
   const audioLabels: string[] = [];
@@ -412,27 +483,52 @@ export function buildExportGraph(
   }
 
   args.push('-filter_complex_script', paths.scriptPath);
-  args.push('-map', '[vout]', '-map', '[aout]');
+  // `-vn` is redundant beside a lone `-map [aout]` and is passed anyway, for the
+  // same reason the trailing output `-t` is passed even though the base's `d=`
+  // already fixes the length (EXPORT §1.8): it is a hard statement of intent
+  // that bounds the output even if a future `-map` edit is wrong, and a
+  // wrong-shaped file is the failure that would not announce itself.
+  if (audioOnly) args.push('-vn', '-map', '[aout]');
+  else args.push('-map', '[vout]', '-map', '[aout]');
 
   /* ------------------------------------------------------------ §1.10 encoder */
 
-  if (req.codec === 'h264') {
-    const q = X264[req.quality];
-    args.push('-c:v', 'libx264', '-preset', q.preset, '-crf', q.crf);
-    args.push('-pix_fmt', shape.basePixFmt, '-r', rate(OF));
-    args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
-    args.push('-t', sec(durationSeconds), '-movflags', '+faststart', '-f', 'mp4');
-  } else if (req.codec === 'h265') {
-    const q = X265[req.quality];
-    args.push('-c:v', 'libx265', '-preset', q.preset, '-crf', q.crf, '-tag:v', 'hvc1');
-    args.push('-pix_fmt', shape.basePixFmt, '-r', rate(OF));
-    args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
-    args.push('-t', sec(durationSeconds), '-movflags', '+faststart', '-f', 'mp4');
-  } else {
-    args.push('-c:v', 'prores_ks', '-profile:v', PRORES_PROFILE[req.quality], '-vendor', 'apl0');
-    args.push('-pix_fmt', shape.basePixFmt, '-r', rate(OF));
-    args.push('-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2');
-    args.push('-t', sec(durationSeconds), '-f', 'mov');
+  if (audioOnly) {
+    // An explicit arm, because the chain below used to end in ProRes's `else`
+    // and a widened union would otherwise send wav straight into `-c:v
+    // prores_ks` and a null `shape`.
+    if (req.codec === 'wav') {
+      args.push('-c:a', WAV_PCM[req.quality], '-ar', '48000', '-ac', '2');
+      args.push('-t', sec(durationSeconds), '-f', 'wav');
+    } else if (req.codec === 'mp3') {
+      args.push('-c:a', 'libmp3lame', '-b:a', AUDIO_BITRATE.mp3[req.quality]);
+      args.push('-ar', '48000', '-ac', '2');
+      args.push('-t', sec(durationSeconds), '-f', 'mp3');
+    } else {
+      // .m4a IS the mp4 container, so a front-loaded moov is free and kept.
+      args.push('-c:a', 'aac', '-b:a', AUDIO_BITRATE.aac[req.quality]);
+      args.push('-ar', '48000', '-ac', '2');
+      args.push('-t', sec(durationSeconds), '-movflags', '+faststart', '-f', 'mp4');
+    }
+  } else if (shape !== null) {
+    if (req.codec === 'h264') {
+      const q = X264[req.quality];
+      args.push('-c:v', 'libx264', '-preset', q.preset, '-crf', q.crf);
+      args.push('-pix_fmt', shape.basePixFmt, '-r', rate(OF));
+      args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
+      args.push('-t', sec(durationSeconds), '-movflags', '+faststart', '-f', 'mp4');
+    } else if (req.codec === 'h265') {
+      const q = X265[req.quality];
+      args.push('-c:v', 'libx265', '-preset', q.preset, '-crf', q.crf, '-tag:v', 'hvc1');
+      args.push('-pix_fmt', shape.basePixFmt, '-r', rate(OF));
+      args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2');
+      args.push('-t', sec(durationSeconds), '-movflags', '+faststart', '-f', 'mp4');
+    } else {
+      args.push('-c:v', 'prores_ks', '-profile:v', PRORES_PROFILE[req.quality], '-vendor', 'apl0');
+      args.push('-pix_fmt', shape.basePixFmt, '-r', rate(OF));
+      args.push('-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2');
+      args.push('-t', sec(durationSeconds), '-f', 'mov');
+    }
   }
 
   // §2.1 — stdout carries progress blocks and nothing else, so the parser owns

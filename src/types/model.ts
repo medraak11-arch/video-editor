@@ -120,6 +120,16 @@ export const DEFAULT_CLIP_PROPERTIES: ClipProperties = {
   volume: 1,
 };
 
+/**
+ * Which streams of the referenced media this clip uses.
+ *
+ * ABSENT means 'av'. The field is optional so that a .veproj written before this
+ * feature — which has no such key — is a valid project file rather than a
+ * migration, and so that an ordinary clip does not carry a redundant "av" into
+ * every save. Read it through `clipStreams`, never directly.
+ */
+export type ClipStreams = 'av' | 'video' | 'audio';
+
 export interface Clip {
   id: ClipId;
   mediaId: MediaId;
@@ -133,10 +143,19 @@ export interface Clip {
   /** Display name. Defaults to the media name; user-renameable later. */
   name: string;
   properties: ClipProperties;
+  /** Undefined ≡ 'av'. Written only by `detachAudio`; see docs/AUDIO-FEATURES.md §1.1. */
+  streams?: ClipStreams;
 }
 
 /** Exclusive end. There is no `end` field — derive it, always, with this helper. */
 export const clipEnd = (c: Clip): Frames => c.start + c.duration;
+
+/** THE reader. Nothing anywhere may write `c.streams ?? 'av'` inline. */
+export const clipStreams = (c: Clip): ClipStreams => c.streams ?? 'av';
+/** True when this clip puts pixels on the canvas. */
+export const clipHasVideo = (c: Clip): boolean => clipStreams(c) !== 'audio';
+/** True when this clip puts samples in the mix. */
+export const clipHasAudio = (c: Clip): boolean => clipStreams(c) !== 'video';
 
 /** Source frames this clip consumes. THE source-mapping primitive (PLAN §2.4). */
 export const clipSourceLength = (c: Clip): Frames => Math.round(c.duration * c.properties.speed);

@@ -17,6 +17,7 @@
 --------------------------------------------------------------------------- */
 
 import type { ExportBridge, ExportProgressEvent, ExportRequest } from '../../types/api';
+import { isAudioOnlyCodec } from '../../types/api';
 
 /** Wall-clock shape of the simulated encode. */
 const PREPARE_MS = 450;
@@ -118,11 +119,15 @@ export const exportStub: ExportBridge = {
       interchangeable with it. */
   start(req: ExportRequest): Promise<{ jobId: string }> {
     counter += 1;
-    const framesTotal = Math.max(1, Math.round(req.durationFrames));
+    // An audio-only export has no output frames, so it reports 0 — the same
+    // number the real bridge reports (AUDIO-FEATURES §2.8). The encode's wall
+    // clock still comes from the range, because there is still a range.
+    const rangeFrames = Math.max(1, Math.round(req.durationFrames));
+    const framesTotal = isAudioOnlyCodec(req.codec) ? 0 : rangeFrames;
     const job: Job = {
       id: `stub_${counter}`,
       framesTotal,
-      encodeMs: Math.min(ENCODE_MAX_MS, Math.max(ENCODE_MIN_MS, framesTotal * MS_PER_FRAME)),
+      encodeMs: Math.min(ENCODE_MAX_MS, Math.max(ENCODE_MIN_MS, rangeFrames * MS_PER_FRAME)),
       startedAt: performance.now(),
       raf: null,
       lastEmit: 0,

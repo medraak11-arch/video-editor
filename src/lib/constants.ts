@@ -91,4 +91,10 @@ export const CONTAINER: Record<ExportSettings['codec'], string> = {
   h264: 'mp4',
   h265: 'mp4',
   prores: 'mov',
+  // `.m4a` IS the mp4 container; `-map [aout]` alone is what makes the file
+  // audio-only (AUDIO-FEATURES §2.3). Mirrored in electron/export/graph.ts,
+  // which may not import from src/lib — the two are pinned by an §2.5 test.
+  aac: 'm4a',
+  mp3: 'mp3',
+  wav: 'wav',
 };

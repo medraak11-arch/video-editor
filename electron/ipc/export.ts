@@ -25,7 +25,7 @@ import { constants as FS, rmSync } from 'node:fs';
 import { access, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { CH } from '../../src/types/api';
+import { CH, isAudioOnlyCodec } from '../../src/types/api';
 import type {
   ExportDocument,
   ExportError,
@@ -198,7 +198,14 @@ function settle(
 
 /* -------------------------------------------------------------- validation */
 
-const CODECS: ReadonlyArray<ExportRequest['codec']> = ['h264', 'h265', 'prores'];
+const CODECS: ReadonlyArray<ExportRequest['codec']> = [
+  'h264',
+  'h265',
+  'prores',
+  'aac',
+  'mp3',
+  'wav',
+];
 const QUALITIES: ReadonlyArray<ExportRequest['quality']> = ['draft', 'good', 'best'];
 const RANGES: ReadonlyArray<ExportRequest['range']> = ['entire', 'inout'];
 
@@ -404,7 +411,12 @@ async function runJob(job: Job, rawReq: unknown): Promise<void> {
     // A best-effort framesTotal as soon as the request is known well-formed, so the
     // dialog's frame counter is honest from the second event rather than the fifth.
     // buildExportGraph replaces it with the authoritative number at 0.55.
-    if (req.document && req.document.fps > 0) {
+    // An audio-only export has no output frames, so the pre-flight agrees with
+    // the graph rather than flashing a video frame count and then dropping to
+    // zero a few events later.
+    if (isAudioOnlyCodec(req.codec)) {
+      job.framesTotal = 0;
+    } else if (req.document && req.document.fps > 0) {
       job.framesTotal = Math.max(
         1,
         Math.round((req.durationFrames / req.document.fps) * req.fps),

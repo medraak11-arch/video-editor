@@ -11,15 +11,24 @@
    two levels up.
 --------------------------------------------------------------------------- */
 
-import { app, BrowserWindow, ipcMain, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { CH } from '../src/types/api';
+import type { CloseSaveResolution, ProjectStateReport } from '../src/types/api';
 import { describeFfmpegResolution } from './ffmpeg';
 import { registerExportIpc } from './ipc/export';
 import { registerMediaIpc } from './ipc/media';
-import { registerProjectIpc } from './ipc/project';
+import {
+  beginDecision,
+  endDecision,
+  hasLiveSnapshot,
+  isDecisionInFlight,
+  registerProjectIpc,
+  retireAutosaveSync,
+  unsavedQuestion,
+} from './ipc/project';
 
 const MIN_WINDOW = { width: 1024, height: 640 };
 
@@ -132,7 +141,239 @@ async function serveMediaFile(abs: string, request: Request): Promise<Response> 
 
 let mainWindow: BrowserWindow | null = null;
 
+/* ======================================================== the close guard ===
+   SAFETY.md §1. `win.on('close')` is SYNCHRONOUS — preventDefault() must be
+   called during that tick, and main cannot read the renderer's zustand store.
+   So the renderer mirrors three facts here whenever they change and main
+   answers from the mirror with no round trip.
+
+   The mirror starts clean, so a renderer that dies before its first push closes
+   without a prompt — which is right, because a renderer that never reported
+   dirty never told us it had anything.
+
+   NOT DELIVERED, and stated rather than faked: electron/ipc/export.ts does not
+   export `hasActiveExport` / `stopExportsSync` / `holdExportsThroughQuit`
+   (SAFETY §9.3), so `exporting` is false everywhere below. Per §1.7's stated
+   degradation the export question is never asked, no dialog string promises a
+   removal we cannot perform, and a running export dies on close exactly as it
+   does today. Wiring those three exports turns the feature on with no other
+   change to the shape of this block.                                          */
+
+let projectState: ProjectStateReport = {
+  isDirty: false,
+  projectName: 'Untitled',
+  hasPath: false,
+};
+
+/** Approval is per WINDOW, never per process: on darwin `activate` builds a
+ *  second window in the same process, and a process-wide boolean would let that
+ *  window inherit the first one's approval and close a dirty project silently. */
+const closeApproved = new WeakSet<BrowserWindow>();
+let quitApproved = false; // reset on the first line of createWindow()
+let sessionEnding = false; // the OS is shutting us down — never prompt (§1.8)
+
+const CLOSE_SAVE_WATCHDOG_MS = 60_000;
+
+const saveWaiters = new Map<string, (o: CloseSaveResolution) => void>();
+
+const isProjectStateReport = (v: unknown): v is ProjectStateReport =>
+  typeof v === 'object' &&
+  v !== null &&
+  typeof (v as ProjectStateReport).isDirty === 'boolean' &&
+  typeof (v as ProjectStateReport).projectName === 'string' &&
+  typeof (v as ProjectStateReport).hasPath === 'boolean';
+
+const unresponsiveQuestion = (crashed: boolean): Electron.MessageBoxOptions => ({
+  type: 'warning',
+  noLink: true,
+  title: 'Video Editor',
+  // A crashed renderer gets Cancel, not 'Keep waiting': there is nothing to wait
+  // for, and a 'Keep waiting' that re-raises the same dialog is a loop.
+  buttons: crashed ? ['Close without saving', 'Cancel'] : ['Close without saving', 'Keep waiting'],
+  defaultId: 1,
+  cancelId: 1,
+  message: crashed ? 'The editor has stopped running.' : 'The editor is not responding.',
+  detail: hasLiveSnapshot()
+    ? 'Its unsaved changes cannot be written. Changes since the last automatic snapshot are lost; the snapshot is kept and offered back the next time the app starts.'
+    : 'Its unsaved changes cannot be written. Closing now loses them.',
+});
+
+/**
+ * Two ways in, one dialog, and the primary button ALWAYS closes the window —
+ * that is what makes it impossible for a crashed renderer to produce a window
+ * that cannot be closed.
+ */
+async function watchdog(
+  win: BrowserWindow,
+  settle: (o: CloseSaveResolution) => void,
+  how: { crashed: boolean },
+): Promise<void> {
+  if (win.isDestroyed()) return settle('abandon');
+  let response: number;
+  try {
+    ({ response } = await dialog.showMessageBox(win, unresponsiveQuestion(how.crashed)));
+  } catch {
+    // The dialog could not be raised at all — the window is going or gone. Settle
+    // rather than leave requestRendererSave pending forever, which would hold the
+    // decision mutex and make the window unclosable.
+    return settle('abandon');
+  }
+  if (response === 0) return settle('abandon'); // Close without saving
+  if (how.crashed) return settle('cancelled'); // Cancel — abort, the window stays
+  // 'Keep waiting' on a merely wedged renderer: re-arm and let it try again.
+  setTimeout(() => void watchdog(win, settle, how), CLOSE_SAVE_WATCHDOG_MS);
+}
+
+/**
+ * The save must be performed BY THE RENDERER — serializeProject(readStore())
+ * needs the store. ipcMain has no invoke toward a renderer, so this is a message
+ * plus a correlated reply.
+ */
+function requestRendererSave(win: BrowserWindow): Promise<CloseSaveResolution> {
+  if (win.isDestroyed()) return Promise.resolve('abandon');
+  return new Promise((resolve) => {
+    const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    let timer: NodeJS.Timeout | null = null;
+    const settle = (o: CloseSaveResolution) => {
+      if (timer) clearTimeout(timer);
+      saveWaiters.delete(token);
+      resolve(o);
+    };
+    saveWaiters.set(token, settle);
+
+    // A crashed renderer will never reply, so do not arm a 60-second timer to
+    // discover something already known. Ask immediately.
+    if (win.webContents.isCrashed()) return void watchdog(win, settle, { crashed: true });
+
+    timer = setTimeout(() => void watchdog(win, settle, { crashed: false }), CLOSE_SAVE_WATCHDOG_MS);
+    win.webContents.send(CH.appSaveRequest, token);
+  });
+}
+
+interface CloseApproval {
+  /** Re-issue app.quit() after the window goes. Set only on the before-quit path. */
+  reissueQuit: boolean;
+  /** Delete this session's snapshot. FALSE on every 'abandon'. */
+  retireSnapshot: boolean;
+}
+
+/**
+ * `win.close()` is the last thing that can be skipped, and nothing before it is
+ * allowed to throw past this function: `closeApproved` is already set by then,
+ * so a throw would leave a window that ignored the X AND whose next X press
+ * closes instantly with no prompt.
+ */
+function approveAndClose(win: BrowserWindow, a: CloseApproval): void {
+  closeApproved.add(win);
+  quitApproved = true;
+  try {
+    if (a.retireSnapshot) retireAutosaveSync();
+  } catch {
+    /* Hygiene is never a reason to fail a close. retireAutosaveSync already
+       swallows its own errors; this is the second layer, because a close that
+       silently does nothing is the worst outcome in SAFETY.md. */
+  }
+  if (!win.isDestroyed()) win.close();
+  if (a.reissueQuit) app.quit();
+}
+
+async function resolveCloseIntent(
+  win: BrowserWindow,
+  entry: { reissueQuit: boolean },
+): Promise<void> {
+  if (!beginDecision()) return; // the open guard, or a previous close, owns the dialog
+  try {
+    const go = (retireSnapshot: boolean) => approveAndClose(win, { ...entry, retireSnapshot });
+    if (!projectState.isDirty) return go(true);
+
+    let response: number;
+    try {
+      ({ response } = await dialog.showMessageBox(
+        win,
+        unsavedQuestion(projectState, false, 'close'),
+      ));
+    } catch {
+      // The question could not be put. Aborting is the only safe answer: nothing
+      // was decided, the preventDefault stands, and the next X asks again.
+      return;
+    }
+    if (response === 2) return; // Cancel genuinely aborts: no approval, the preventDefault stands
+    if (response === 1) return go(true); // Do not save — an explicit discard, so the snapshot goes too
+    // response === 0 — Save.
+    const outcome = await requestRendererSave(win);
+    if (outcome === 'saved') return go(true);
+    // 'abandon' is the watchdog's: the user chose "close this broken window",
+    // not "throw this work away", so the snapshot is KEPT and offered next launch.
+    if (outcome === 'abandon') return go(false);
+    // 'cancelled' — they declined to name the file; closing anyway would destroy
+    // exactly the work they declined to discard. 'failed' — the InlineNotice in
+    // the titlebar already says why, and it is readable because the window stays.
+    return;
+  } finally {
+    endDecision();
+  }
+}
+
+function registerCloseGuard(): void {
+  ipcMain.on(CH.appProjectState, (_event, report: unknown) => {
+    if (!isProjectStateReport(report)) return;
+    projectState = report;
+  });
+
+  ipcMain.on(CH.appSaveResult, (_event, token: unknown, outcome: unknown) => {
+    if (typeof token !== 'string') return;
+    const settle = saveWaiters.get(token);
+    if (!settle) return;
+    saveWaiters.delete(token);
+    // Narrowed to the renderer's three. A message claiming 'abandon' is treated
+    // as 'failed'; the decision to close without saving is the user's, made in a
+    // dialog main drew.
+    settle(outcome === 'saved' || outcome === 'cancelled' ? outcome : 'failed');
+  });
+
+  // Registered BEFORE registerExportIpc so this listener runs first: Node's
+  // EventEmitter runs every before-quit listener regardless of preventDefault().
+  app.on('before-quit', (event) => {
+    if (quitApproved) return;
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) {
+      quitApproved = true;
+      return;
+    }
+    if (!projectState.isDirty) {
+      quitApproved = true;
+      return;
+    }
+    event.preventDefault();
+    if (!isDecisionInFlight()) void resolveCloseIntent(win, { reissueQuit: true });
+  });
+
+}
+
+/**
+ * Windows gives an application a few seconds at logoff and kills it if it
+ * blocks. Prompting there is futile and hostile: the user is looking at a
+ * shutdown screen, not at our window. The guarantee at shutdown is the autosave
+ * snapshot and nothing else, which is why nothing is retired on this path.
+ *
+ * SAFETY §1.8 writes this as `app.on('session-end')`; Electron declares the
+ * event on BaseWindow/BrowserWindow only (win32), so it is registered per window.
+ */
+function handleSessionEnd(win: BrowserWindow): void {
+  sessionEnding = true;
+  // WM_ENDSESSION is not guaranteed to arrive before the WM_CLOSE that raised
+  // our dialog. If a decision is outstanding when it lands, stop asking and let
+  // the window go: a window that cannot be closed is worse than twenty seconds
+  // of lost editing, and the snapshot covers those twenty seconds. The pending
+  // dialog's promise resolves afterwards into a resolveCloseIntent whose every
+  // remaining branch is isDestroyed()-guarded, so it does nothing.
+  if (!win.isDestroyed() && isDecisionInFlight()) {
+    approveAndClose(win, { reissueQuit: false, retireSnapshot: false });
+  }
+}
+
 function createWindow(): BrowserWindow {
+  quitApproved = false; // approval never outlives the window that earned it
   const preload = path.join(__dirname, 'preload.js');
 
   const win = new BrowserWindow({
@@ -163,6 +404,19 @@ function createWindow(): BrowserWindow {
   };
   win.on('maximize', notifyMaximized);
   win.on('unmaximize', notifyMaximized);
+
+  win.on('session-end', () => handleSessionEnd(win));
+
+  // preventDefault() runs UNCONDITIONALLY on the undecided path, before any
+  // await. That is the whole trick: the close is cancelled first and re-issued
+  // later, so every subsequent step is free to be asynchronous.
+  win.on('close', (event) => {
+    if (closeApproved.has(win) || sessionEnding) return; // let it go
+    event.preventDefault();
+    if (isDecisionInFlight()) return; // a dialog already has focus; answer that one
+    void resolveCloseIntent(win, { reissueQuit: false });
+  });
+
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
   });
@@ -313,6 +567,10 @@ if (!gotLock) {
     registerWindowIpc();
     registerMediaIpc(ipcMain);
     registerProjectIpc(ipcMain);
+    // Before registerExportIpc: its killEverythingSync is also a before-quit
+    // listener, and EventEmitter runs every listener regardless of
+    // preventDefault(), so ours has to be listener 0 (SAFETY §1.8).
+    registerCloseGuard();
     registerExportIpc(ipcMain);
 
     mainWindow = createWindow();

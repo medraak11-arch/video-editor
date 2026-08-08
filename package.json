@@ -1,5 +1,6 @@
 {
   "name": "video-editor",
+  "productName": "Video Editor",
   "private": true,
   "version": "0.1.0",
   "type": "module",

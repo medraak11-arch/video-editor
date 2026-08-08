@@ -38,6 +38,8 @@ import { TimelineRuler } from './TimelineRuler';
 import { TrackHead } from './TrackHead';
 import { Track } from './Track';
 import { Playhead, PlayheadHandle, usePlayheadSync } from './Playhead';
+import { ClipContextMenu } from './ClipContextMenu';
+import type { ClipContextMenuHandle } from './ClipContextMenu';
 import { useTimelineInteraction } from './useTimelineInteraction';
 
 export function Timeline(): ReactElement {
@@ -76,6 +78,8 @@ export function Timeline(): ReactElement {
   const trimBadge = useRef<HTMLDivElement>(null);
   const dropLine = useRef<HTMLDivElement>(null);
 
+  const clipMenu = useRef<ClipContextMenuHandle>(null);
+
   const [viewportWidth, setViewportWidth] = useState(0);
 
   // Refs are stable, so this bag is built once. A fresh object every render
@@ -97,7 +101,7 @@ export function Timeline(): ReactElement {
     [],
   );
 
-  const interaction = useTimelineInteraction(overlayRefs);
+  const interaction = useTimelineInteraction(overlayRefs, clipMenu);
 
   usePlayheadSync(playheadLine, playheadHead);
 
@@ -253,6 +257,7 @@ export function Timeline(): ReactElement {
           role="group"
           aria-label="Timeline tracks"
           onPointerDown={interaction.onLanePointerDown}
+          onContextMenu={interaction.onLaneContextMenu}
           onKeyDown={interaction.onLaneKeyDown}
           onFocus={interaction.onLaneFocus}
           onDragEnter={interaction.onDragEnter}
@@ -284,6 +289,8 @@ export function Timeline(): ReactElement {
                 : 'Import media to place your first clip'}
             </p>
           ) : null}
+
+          <ClipContextMenu ref={clipMenu} />
 
           <Playhead ref={playheadLine} />
 

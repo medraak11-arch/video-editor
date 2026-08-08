@@ -27,6 +27,12 @@
   border-bottom: 1px solid var(--border-hairline);
 }
 
+/* One line of identity, beneath the name: what the clip IS, not a control. */
+.ve-inspector-streams {
+  margin-top: var(--space-xs);
+  color: var(--text-muted);
+}
+
 /* ================================================================== group */
 
 .ve-group {

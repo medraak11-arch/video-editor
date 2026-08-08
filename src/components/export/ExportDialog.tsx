@@ -34,14 +34,24 @@ import { getEditorAPI } from '../../lib/editorApi';
 import { CONTAINER } from '../../lib/constants';
 import { framesToDuration, framesToSeconds } from '../../lib/time';
 import type { ExportProgressEvent, ExportSettings } from '../../types/api';
+import { isAudioOnlyCodec } from '../../types/api';
 import { exportStub } from './exportStub';
 import { buildExportDocument } from './exportDocument';
 import { estimateBytes, formatBytes, formatFps, resolveExportRange } from './exportMath';
 
-const CODEC_OPTIONS: ReadonlyArray<{ value: ExportSettings['codec']; label: string }> = [
-  { value: 'h264', label: 'H.264' },
-  { value: 'h265', label: 'H.265' },
-  { value: 'prores', label: 'ProRes' },
+/**
+ * The control now chooses an output KIND, not a video compressor, so the row is
+ * `Format`. Video first, audio second, and the one-word suffix carries the
+ * grouping — the `Select` primitive has no `<optgroup>` and adding one to a
+ * shared primitive for a single call site is out of proportion.
+ */
+const FORMAT_OPTIONS: ReadonlyArray<{ value: ExportSettings['codec']; label: string }> = [
+  { value: 'h264', label: 'H.264 video' },
+  { value: 'h265', label: 'H.265 video' },
+  { value: 'prores', label: 'ProRes video' },
+  { value: 'aac', label: 'AAC audio' },
+  { value: 'mp3', label: 'MP3 audio' },
+  { value: 'wav', label: 'WAV audio' },
 ];
 
 const QUALITY_OPTIONS: ReadonlyArray<{ value: ExportSettings['quality']; label: string }> = [
@@ -173,6 +183,7 @@ export function ExportDialog(): ReactElement {
   const estimatedBytes = estimateBytes(settings, durationSeconds);
   const outputName = `${settings.filename || 'Untitled'}.${CONTAINER[settings.codec]}`;
   const hasInOut = inPoint !== null || outPoint !== null;
+  const audioOnly = isAudioOnlyCodec(settings.codec);
 
   const sizeOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -349,7 +360,7 @@ export function ExportDialog(): ReactElement {
     <Dialog
       open={open}
       onClose={requestClose}
-      title="Export video"
+      title="Export"
       width={520}
       initialFocusRef={filenameRef}
       footer={footer}
@@ -375,9 +386,15 @@ export function ExportDialog(): ReactElement {
                 </div>
                 <span className="ve-progress-value type-numeric">{percent}%</span>
               </div>
-              <p className="ve-export-frames type-numeric">
-                Frame {event?.framesDone ?? 0} of {event?.framesTotal ?? range.durationFrames}
-              </p>
+              {/* There are no output frames in an audio-only export, so the
+                  counter is not rendered at all — not "Frame 0 of 0", and not a
+                  substituted seconds read-out, which would be derived rather
+                  than reported. The percentage and the bar already state it. */}
+              {audioOnly ? null : (
+                <p className="ve-export-frames type-numeric">
+                  Frame {event?.framesDone ?? 0} of {event?.framesTotal ?? range.durationFrames}
+                </p>
+              )}
             </>
           ) : null}
 
@@ -454,36 +471,47 @@ export function ExportDialog(): ReactElement {
             </div>
           </PropertyRow>
 
-          <PropertyRow label="Resolution" htmlFor="ve-export-resolution">
-            {/* numeric: the dimensions change as the setting changes, and §7.2
-                names "dimension" in the tabular rule. */}
-            <Select
-              id="ve-export-resolution"
-              label="Resolution"
-              numeric
-              value={`${settings.width}x${settings.height}`}
-              options={sizeOptions}
-              onChange={onResolution}
-            />
-          </PropertyRow>
+          {/* Not disabled — not rendered. An audio file has no resolution and no
+              frame grid, and six greyed fields with six copies of "not used for
+              audio" is the wall of dead controls PRODUCT.md §2 rules out. Both
+              rows sit ABOVE Format, so the form collapses from the middle and
+              the control the user just operated stays under the pointer. The
+              values themselves are retained in state and still sent — see the
+              retention note in AUDIO-FEATURES §2.4. */}
+          {audioOnly ? null : (
+            <>
+              <PropertyRow label="Resolution" htmlFor="ve-export-resolution">
+                {/* numeric: the dimensions change as the setting changes, and §7.2
+                    names "dimension" in the tabular rule. */}
+                <Select
+                  id="ve-export-resolution"
+                  label="Resolution"
+                  numeric
+                  value={`${settings.width}x${settings.height}`}
+                  options={sizeOptions}
+                  onChange={onResolution}
+                />
+              </PropertyRow>
 
-          <PropertyRow label="Frame rate" htmlFor="ve-export-fps">
-            <Select
-              id="ve-export-fps"
-              label="Frame rate"
-              numeric
-              value={String(settings.fps)}
-              options={fpsOptions}
-              onChange={(next: string) => patch({ fps: Number(next) })}
-            />
-          </PropertyRow>
+              <PropertyRow label="Frame rate" htmlFor="ve-export-fps">
+                <Select
+                  id="ve-export-fps"
+                  label="Frame rate"
+                  numeric
+                  value={String(settings.fps)}
+                  options={fpsOptions}
+                  onChange={(next: string) => patch({ fps: Number(next) })}
+                />
+              </PropertyRow>
+            </>
+          )}
 
-          <PropertyRow label="Codec" htmlFor="ve-export-codec">
+          <PropertyRow label="Format" htmlFor="ve-export-format">
             <Select
-              id="ve-export-codec"
-              label="Codec"
+              id="ve-export-format"
+              label="Format"
               value={settings.codec}
-              options={CODEC_OPTIONS}
+              options={FORMAT_OPTIONS}
               onChange={(codec: ExportSettings['codec']) => patch({ codec })}
             />
           </PropertyRow>
@@ -522,7 +550,11 @@ export function ExportDialog(): ReactElement {
               </span>
             </div>
             <div className="ve-summary-row">
-              <span className="ve-summary-label type-label">Estimated size</span>
+              {/* The label follows the honesty of the number: WAV's size is
+                  arithmetic, everything else's is a model. */}
+              <span className="ve-summary-label type-label">
+                {settings.codec === 'wav' ? 'Size' : 'Estimated size'}
+              </span>
               <span className="ve-summary-value type-numeric">{formatBytes(estimatedBytes)}</span>
             </div>
           </div>

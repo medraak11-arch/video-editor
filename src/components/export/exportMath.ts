@@ -7,18 +7,41 @@
    reproducible by hand.
 --------------------------------------------------------------------------- */
 
-import type { ExportSettings } from '../../types/api';
+import type { AudioCodec, ExportSettings, VideoCodec } from '../../types/api';
+import { isAudioOnlyCodec } from '../../types/api';
 import type { Frames } from '../../types/model';
 import type { StoreState } from '../../state/types';
 import { selectTimelineDurationFrames } from '../../state/timelineSlice';
 
-export const BITRATE_KBPS: Record<
-  ExportSettings['codec'],
-  Record<ExportSettings['quality'], number>
-> = {
+/**
+ * Narrowed to `VideoCodec` deliberately: it is a model of PIXELS, so widening
+ * it to keep the compiler quiet would put an audio codec back on a curve that
+ * has nothing to say about it. The narrowing is what makes `tsc` point at every
+ * site that has not been taught about the audio branch.
+ */
+export const BITRATE_KBPS: Record<VideoCodec, Record<ExportSettings['quality'], number>> = {
   h264: { draft: 4000, good: 12000, best: 24000 },
   h265: { draft: 2500, good: 8000, best: 16000 },
   prores: { draft: 45000, good: 82000, best: 122000 },
+};
+
+/**
+ * The literal `-b:a` argument. Not a model — the number main passes to ffmpeg,
+ * mirrored from `electron/export/graph.ts` (two copies, as `CONTAINER` already
+ * is: a pure `graph.ts` may not import from `src/lib/`).
+ */
+export const AUDIO_BITRATE_KBPS: Record<AudioCodec, Record<ExportSettings['quality'], number>> = {
+  aac: { draft: 128, good: 192, best: 256 },
+  mp3: { draft: 128, good: 192, best: 320 },
+  wav: { draft: 1536, good: 1536, best: 2304 }, // 48000 × 2ch × bytes × 8 / 1000
+};
+
+export const AUDIO_SAMPLE_RATE = 48000;
+export const AUDIO_CHANNELS = 2;
+export const WAV_BYTES_PER_SAMPLE: Record<ExportSettings['quality'], number> = {
+  draft: 2,
+  good: 2,
+  best: 3,
 };
 
 const REFERENCE_PIXELS = 1920 * 1080;
@@ -49,6 +72,23 @@ export function estimateBytes(
   settings: Pick<ExportSettings, 'codec' | 'quality' | 'width' | 'height'>,
   durationSeconds: number,
 ): number {
+  // WAV is not an estimate. It is sample rate × channels × width × time,
+  // exactly, plus a header under 110 bytes that no display unit here resolves.
+  if (settings.codec === 'wav') {
+    return (
+      AUDIO_SAMPLE_RATE *
+      AUDIO_CHANNELS *
+      WAV_BYTES_PER_SAMPLE[settings.quality] *
+      durationSeconds
+    );
+  }
+  // aac / mp3: CBR, so this is the bitrate ffmpeg is being told to hit. No
+  // pixel term — for an audio format every term but duration is a fabrication.
+  // AAC is an upper bound: its encoder spends fewer bits than asked on easy
+  // material, and almost none on silence.
+  if (isAudioOnlyCodec(settings.codec)) {
+    return ((AUDIO_BITRATE_KBPS[settings.codec][settings.quality] * 1000) / 8) * durationSeconds;
+  }
   const kbps = BITRATE_KBPS[settings.codec][settings.quality];
   const pixelScale = (settings.width * settings.height) / REFERENCE_PIXELS;
   return ((kbps * 1000) / 8) * durationSeconds * pixelScale;
