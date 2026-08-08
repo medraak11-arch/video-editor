@@ -27,8 +27,36 @@ import { CH } from '../src/types/api';
 import type { SplashStatus } from '../src/types/api';
 import { BUILD_ARG, appBuild } from './main';
 
-/** Do not SHOW the splash until the launch is already known to be slow. */
-const SPLASH_SHOW_DELAY_MS = 250;
+/**
+ * Delay before showing. 0 because the splash is now shown on EVERY launch.
+ *
+ * It was 250ms, gated so the splash only appeared once the launch was already
+ * slow. That is the more principled behaviour and it is not what was asked for:
+ * on this machine the splash was destroyed 342ms after spawn, before the delay
+ * and the paint gate could both be met, so it was never composited even once.
+ * A splash nobody ever sees is not a splash. The user asked for one that shows
+ * the version, so it shows.
+ */
+const SPLASH_SHOW_DELAY_MS = 0;
+
+/**
+ * Once shown, stay up at least this long. Without a floor the splash appears and
+ * vanishes inside a frame or two on a fast launch, which reads as a flicker
+ * rather than as a splash — worse than not drawing it at all.
+ *
+ * This is a REAL cost: the main window is held for the remainder (see
+ * splashHoldMs). It is the honest trade for having a splash on a machine with
+ * nothing slow to report, and it is the only place in this app where something
+ * is held open to be looked at.
+ */
+const SPLASH_MIN_VISIBLE_MS = 900;
+
+/**
+ * Hard ceiling on the whole splash wait, counted from the editor being ready.
+ * The splash renderer can simply lose the paint race on a fast machine; without
+ * a cap the editor would sit finished behind a window that never appeared.
+ */
+const SPLASH_SETTLE_CAP_MS = 1_800;
 /** Do not draw a status LINE until a phase has actually been in flight this long. */
 const SPLASH_STATUS_DELAY_MS = 400;
 /** Hard ceiling. Past this the splash is destroyed and the main window is shown regardless. */
@@ -58,6 +86,8 @@ let editorLabel: string = PHASE_LABEL.editor;
 
 /* ---- the three conditions of the deferred show (§3.4) ------------------- */
 let delayElapsed = false;
+/** When the splash was actually composited, or null if it never was. */
+let shownAt: number | null = null;
 let paintedAndSettled = false;
 
 let showTimer: NodeJS.Timeout | null = null;
@@ -103,7 +133,37 @@ function maybeShow(): void {
   if (!splash || splash.isDestroyed() || splash.isVisible()) return;
   if (!delayElapsed || !paintedAndSettled) return;
   splash.showInactive(); // never takes focus, and never steals the caret
+  shownAt = Date.now();
   pushStatus();
+}
+
+/**
+ * Resolves once the splash has been on screen for SPLASH_MIN_VISIBLE_MS, so it
+ * is seen rather than flickering. main.ts awaits this before closing the splash
+ * and showing the editor, which keeps the invariant that the two are never both
+ * on screen.
+ *
+ * Two escapes, both necessary. If the splash was never created — no splash on
+ * this launch — it resolves immediately and launch pays nothing. And the whole
+ * wait is capped by SPLASH_SETTLE_CAP_MS: the splash renderer can lose the paint
+ * race to the editor on a fast machine, and an uncapped wait for a paint that
+ * may never come would hang the launch behind a decoration. The editor always
+ * wins in the end.
+ */
+export function whenSplashSeen(): Promise<void> {
+  if (!splash || splash.isDestroyed()) return Promise.resolve();
+
+  const deadline = Date.now() + SPLASH_SETTLE_CAP_MS;
+  return new Promise((resolve) => {
+    const tick = (): void => {
+      if (!splash || splash.isDestroyed() || Date.now() >= deadline) return resolve();
+      if (shownAt === null) return void setTimeout(tick, 25); // not painted yet
+      const remaining = SPLASH_MIN_VISIBLE_MS - (Date.now() - shownAt);
+      if (remaining <= 0) return resolve();
+      setTimeout(tick, Math.min(remaining, 25));
+    };
+    tick();
+  });
 }
 
 function onSplashReady(): void {
@@ -233,5 +293,6 @@ export function closeSplash(): void {
   ipcMain.removeListener(CH.splashReady, onSplashReady);
   const win = splash;
   splash = null;
+  shownAt = null;
   if (win && !win.isDestroyed()) win.destroy();
 }

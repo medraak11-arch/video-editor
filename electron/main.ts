@@ -31,7 +31,7 @@ import {
   unsavedQuestion,
   whenRecoveryScanSettled,
 } from './ipc/project';
-import { beginPhase, closeSplash, createSplash, endPhase } from './splash';
+import { beginPhase, closeSplash, createSplash, endPhase, whenSplashSeen } from './splash';
 import { registerUpdate, runUpdateInstaller, updateFeedConfigured } from './update';
 
 const MIN_WINDOW = { width: 1024, height: 640 };
@@ -482,8 +482,14 @@ function createWindow(): BrowserWindow {
   // enough to reach this line early it was never composited at all.
   win.once('ready-to-show', () => {
     endPhase('editor');
-    closeSplash();
-    win.show();
+    // Wait for the splash to have actually been seen before revealing the
+    // editor, so it reads as a splash rather than a flicker. Bounded inside
+    // whenSplashSeen(), and immediate when there is no splash. The close still
+    // happens before show(), so the two windows never overlap.
+    void whenSplashSeen().then(() => {
+      closeSplash();
+      if (!win.isDestroyed()) win.show();
+    });
   });
 
   // The splash is a BrowserWindow, so a splash still alive when the main window
