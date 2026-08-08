@@ -33,8 +33,20 @@ export function describeMoveFailure(reason: MoveFailure, ids: readonly ClipId[])
     }
     case 'no-source':
       return 'End of source media';
-    case 'locked':
-      return 'Track is locked';
+    // The lock may be on a clip the user did not select and cannot see from
+    // here: a speed change closes over the group, so a linked member on a locked
+    // track is in the write set even when nothing the user selected is on one
+    // (docs/LINKING.md §5.6). Not a notice, deliberately — ClipPropertyRow calls
+    // updateClipProperties on every scrub tick, and the field's error slot is
+    // the channel that already exists for exactly this.
+    case 'locked': {
+      const s = readStore();
+      const own = ids.some((id) => {
+        const c = s.clips[id];
+        return c !== undefined && s.tracks[c.trackId]?.locked === true;
+      });
+      return own ? 'Track is locked' : 'A linked clip is on a locked track';
+    }
     case 'out-of-range':
       return 'Outside the timeline';
     case 'no-track':

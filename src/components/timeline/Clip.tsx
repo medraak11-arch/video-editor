@@ -112,6 +112,10 @@ export const Clip = memo(function Clip({
     const c = s.clips[id];
     return c ? clipStreams(c) : 'av';
   });
+  // [stable] — a boolean primitive, so React.memo still holds and a pointermove
+  // still causes zero renders here. Deliberately NOT the LinkId itself: the id is
+  // a string that changes on every re-link, and nothing here uses its value.
+  const linked = useEditorStore((s) => s.clips[id]?.linkId !== undefined);
 
   if (!clip) return null;
 
@@ -176,6 +180,10 @@ export const Clip = memo(function Clip({
   if (trackHidden) states.push('track hidden');
   if (streams === 'audio') states.push('audio only');
   if (streams === 'video') states.push('video only');
+  // The word arrives in the accessible name at the moment focus lands on the
+  // clip — BEFORE the selection expands — which is the right moment for it, and
+  // it is the one channel that survives to zero width (docs/LINKING.md §8.3).
+  if (linked) states.push('linked');
   if (warned) states.push('format mismatch');
   const label = `${clip.name}, ${duration}${states.length > 0 ? `, ${states.join(', ')}` : ''}`;
 
@@ -187,6 +195,7 @@ export const Clip = memo(function Clip({
       data-selected={selected || undefined}
       data-offline={offline || undefined}
       data-streams={streams === 'av' ? undefined : streams}
+      data-linked={linked || undefined}
       data-tiny={tiny || undefined}
       role="option"
       aria-selected={selected}

@@ -25,6 +25,7 @@ import type {
   ClipProperties,
   ClipStreams,
   Frames,
+  LinkId,
   Marker,
   MarkerId,
   MediaId,
@@ -143,8 +144,18 @@ export interface TimelineActions {
   /**
    * Group move. `deltaTrackIndex` is an offset within the SAME-KIND subsequence of
    * trackOrder, so a move can never cross video/audio. All-or-nothing.
+   *
+   * `primaryTrackId` is the gesture's own lane; the vertical offset applies only
+   * to clips of that lane's kind (docs/LINKING.md §5.2b). Required, not optional,
+   * so `tsc` enumerates every call site rather than leaving one on the old
+   * semantics.
    */
-  moveClips(ids: ClipId[], deltaFrames: Frames, deltaTrackIndex: number): MutationResult;
+  moveClips(
+    ids: ClipId[],
+    deltaFrames: Frames,
+    deltaTrackIndex: number,
+    primaryTrackId: TrackId | undefined,
+  ): MutationResult;
   trimClip(id: ClipId, edge: 'in' | 'out', nextFrame: Frames): MutationResult;
   /** Splits every selected clip, or every clip under the playhead when selection is empty. */
   splitAtPlayhead(): void;
@@ -157,10 +168,34 @@ export interface TimelineActions {
    * refusal, raised HERE rather than at the two call sites, so the menu item and
    * the shortcut cannot explain themselves differently.
    *
-   * The pair is INDEPENDENT afterwards (AUDIO-FEATURES §1.6). One history entry
-   * for the whole operation, including any tracks it had to create.
+   * The pair is LINKED afterwards (docs/LINKING.md §4.3). One history entry for
+   * the whole operation, including any tracks it had to create.
    */
   detachAudio(ids?: ClipId[]): void;
+  /**
+   * Form one link group from `ids`, defaulting to the current selection
+   * (docs/LINKING.md §4.1).
+   *
+   * The argument is closed over first, so linking clip A to one member of an
+   * existing group links A to ALL of it — there is no way to end up half joined.
+   * Every target leaves whatever group it was in and joins the new one; a group
+   * left with fewer than two members is dissolved by `withClips`'s pass.
+   *
+   * ONE history entry. Refuses whole, never partially (PLAN §3.4 rule 1).
+   */
+  linkClips(ids?: ClipId[]): void;
+  /**
+   * Dissolve every link group any clip in `ids` belongs to, defaulting to the
+   * current selection (docs/LINKING.md §4.2). Ungrouped clips in `ids` are
+   * ignored; a call that finds no group at all raises a notice rather than
+   * pushing an empty history entry.
+   *
+   * No closure is needed and none is taken: a group is already the unit, and the
+   * ids are only ever read for the LinkIds they carry.
+   *
+   * ONE history entry.
+   */
+  unlinkClips(ids?: ClipId[]): void;
   /** Lift: leaves a gap. */
   deleteSelection(): void;
   /** Closes the gap on the affected tracks. */
@@ -296,6 +331,46 @@ function withClips(
     clips[clip.id] = clip;
   }
 
+  // docs/LINKING.md §5.1 — the dissolve pass. A LinkId carried by fewer than two
+  // clips is a group of one, which means nothing and would make
+  // `selectLinkedClosure` return a set of one — i.e. a clip that renders the link
+  // rail and behaves as if ungrouped. Enforced HERE, at the one funnel, rather
+  // than at the actions that can produce one — removeTrack (which deletes a
+  // lane's clips without consulting a group), splitAtPlayhead (whose right side
+  // can be a single half) and unlinkClips: a rule spread over call sites is a
+  // rule the next call site will forget. deleteSelection and rippleDelete can no
+  // longer reach it at all — their delete set is a whole number of groups — but
+  // they run through this funnel too, and the pass is what keeps that a belt
+  // rather than a load-bearing assumption.
+  //
+  // The gate is exhaustive, not a heuristic. A group's census can change only if
+  // a member is written INTO it, written OUT of it, or deleted — and those are
+  // the three disjuncts. An edit that touches no grouped clip therefore never
+  // walks the clip map, which is every ordinary move, trim and property change on
+  // an ungrouped timeline.
+  const touchesGroup =
+    removed.some((id) => doc.clips[id]?.linkId !== undefined) ||
+    next.some((c) => c.linkId !== undefined || doc.clips[c.id]?.linkId !== undefined);
+
+  if (touchesGroup) {
+    const census = new Map<LinkId, ClipId[]>();
+    for (const clip of Object.values(clips)) {
+      if (clip.linkId === undefined) continue;
+      const list = census.get(clip.linkId);
+      if (list) list.push(clip.id);
+      else census.set(clip.linkId, [clip.id]);
+    }
+    for (const members of census.values()) {
+      if (members.length >= 2) continue;
+      for (const id of members) {
+        const { linkId: _drop, ...rest } = clips[id];
+        clips[id] = rest;
+      }
+    }
+  }
+  // No `touched.add` is needed: dissolving changes neither `trackId` nor `start`,
+  // so `clipsByTrack` is untouched.
+
   const clipsByTrack: Record<TrackId, ClipId[]> = { ...doc.clipsByTrack };
   for (const trackId of touched) {
     const kept = (doc.clipsByTrack[trackId] ?? []).filter(
@@ -311,6 +386,42 @@ function withClips(
     clipsByTrack[trackId] = kept;
   }
   return { ...doc, clips, clipsByTrack };
+}
+
+/**
+ * [UNSTABLE REFERENCE] readStore() / an action only. THE expansion rule, once:
+ * the ids given, plus every clip that shares a linkId with any of them
+ * (docs/LINKING.md §3.1).
+ *
+ * The early return is not a micro-optimisation, it is the common case: on a
+ * timeline with no groups, and on any selection that touches none, this never
+ * walks the clip map at all. It is called once per selection change, once per
+ * gesture start, once per planner call and once per history restore — never in a
+ * rAF body and never on a per-frame path, which is what keeps it off PLAN §1.3
+ * rule 1's list.
+ *
+ * It takes `Pick<StoreState, 'clips'>` rather than the whole store because it
+ * reads exactly one field, and because `restore` has to call it against a
+ * history SNAPSHOT — a `TimelineDoc`, which is not a `StoreState` and never will
+ * be. Every call site that has a full store still type-checks.
+ */
+export function selectLinkedClosure(
+  s: Pick<StoreState, 'clips'>,
+  ids: Iterable<ClipId>,
+): ClipId[] {
+  const groups = new Set<LinkId>();
+  const out = new Set<ClipId>();
+  for (const id of ids) {
+    const clip = s.clips[id];
+    if (!clip) continue;
+    out.add(id);
+    if (clip.linkId !== undefined) groups.add(clip.linkId);
+  }
+  if (groups.size === 0) return [...out];
+  for (const clip of Object.values(s.clips)) {
+    if (clip.linkId !== undefined && groups.has(clip.linkId)) out.add(clip.id);
+  }
+  return [...out];
 }
 
 function pruneSelection(selection: Selection, clips: Record<ClipId, Clip>): Selection {
@@ -427,18 +538,41 @@ export function tracksOfKind(s: StoreState, kind: MediaKind): TrackId[] {
 /**
  * Dry run of a group move. Pure — call it from a pointermove to decide whether the ghost
  * is legal, then call `moveClips` with the same arguments on pointerup.
+ *
+ * `primaryTrackId` is the gesture's own lane: `deltaTrackIndex` is an offset
+ * within the lane list of THAT track's kind, and applies only to members of the
+ * same kind (docs/LINKING.md §5.2b). Without it, dragging the picture of a V1/A1
+ * pair up to V2 would send the sound to A2 and refuse the whole move on a project
+ * whose only audio lane is A1.
  */
 export function planMove(
   s: StoreState,
   ids: readonly ClipId[],
   deltaFrames: number,
   deltaTrackIndex: number,
+  primaryTrackId: TrackId | undefined,
 ): PlanResult {
   if (!isFiniteFrames(deltaFrames)) {
     return { ok: false, reason: 'out-of-range', blockingClipId: null };
   }
+  // Fails closed when the primary track does not resolve, so a missed JavaScript
+  // call site is loud instead of silently degraded: without this,
+  // `s.tracks[undefined]?.kind` is undefined, no clip's kind ever matches it, and
+  // every clip silently keeps its trackId — a vertical drag that quietly becomes
+  // a horizontal one. The gate scripts are .mjs bundled by esbuild: they will not
+  // fail typecheck and they will not throw.
+  const primary = primaryTrackId !== undefined ? s.tracks[primaryTrackId] : undefined;
+  if (!primary) return { ok: false, reason: 'no-track', blockingClipId: null };
+
+  // The two dry-run planners have ONE rule between them: the caller names clips,
+  // the planner moves groups (§5.2a). Relying on `selectMany`'s expansion to hand
+  // this function whole groups would make it correct for the drag path and wrong
+  // for every other caller — `moveClip(id, next)` passes a bare `[id]`, and it is
+  // public API on TimelineActions. A planner that desyncs a group when called
+  // directly is a planner with a trap in it. The closure is idempotent, so the
+  // drag path plans exactly what it planned before.
   const moving: Clip[] = [];
-  for (const id of ids) {
+  for (const id of selectLinkedClosure(s, ids)) {
     const clip = s.clips[id];
     if (clip) moving.push(clip);
   }
@@ -453,9 +587,15 @@ export function planMove(
     if (!origin) return { ok: false, reason: 'no-track', blockingClipId: null };
     if (origin.locked) return { ok: false, reason: 'locked', blockingClipId: clip.id };
 
-    const lane = tracksOfKind(s, origin.kind);
-    const at = lane.indexOf(clip.trackId);
-    const targetId = at < 0 ? undefined : lane[at + deltaTrackIndex];
+    // A lane offset is a spatial fact about the lane the pointer is over, so it
+    // applies only to clips of the pointer's own kind. Every other member keeps
+    // its trackId and takes the horizontal delta alone.
+    let targetId: TrackId | undefined = clip.trackId;
+    if (deltaTrackIndex !== 0 && origin.kind === primary.kind) {
+      const lane = tracksOfKind(s, origin.kind);
+      const at = lane.indexOf(clip.trackId);
+      targetId = at < 0 ? undefined : lane[at + deltaTrackIndex];
+    }
     const target = targetId ? s.tracks[targetId] : undefined;
     if (!targetId || !target) return { ok: false, reason: 'no-track', blockingClipId: null };
     if (target.locked) return { ok: false, reason: 'locked', blockingClipId: null };
@@ -484,7 +624,15 @@ export function planMove(
   return { ok: true, clips: next };
 }
 
-/** Dry run of a trim. Same contract as `planMove`. */
+/**
+ * Dry run of a trim. Same contract as `planMove`, and group-aware in the same
+ * way (docs/LINKING.md §5.3): the caller names one clip, the planner trims every
+ * member of its group by the delta that clip's named edge travelled.
+ *
+ * Group-aware IN PLACE rather than in a second function — it is the one
+ * implementation both the pointermove dry run and the pointerup commit use, and a
+ * second one would let the ghost and the commit disagree.
+ */
 export function planTrim(
   s: StoreState,
   id: ClipId,
@@ -500,35 +648,67 @@ export function planTrim(
   if (!track) return { ok: false, reason: 'no-track', blockingClipId: null };
   if (track.locked) return { ok: false, reason: 'locked', blockingClipId: null };
 
-  const speed = clip.properties.speed || 1;
-  let updated: Clip;
+  // The delta the named edge travelled, computed once, from the named clip.
+  const at = Math.round(nextFrame);
+  const delta = edge === 'in' ? at - clip.start : at - clip.start - clip.duration;
 
-  if (edge === 'in') {
-    const end = clipEnd(clip);
-    const start = Math.round(nextFrame);
-    if (start < 0) return { ok: false, reason: 'out-of-range', blockingClipId: null };
-    const duration = end - start;
-    if (duration < 1) return { ok: false, reason: 'out-of-range', blockingClipId: null };
-    const mediaIn = clip.mediaIn + Math.round((start - clip.start) * speed);
-    if (mediaIn < 0) return { ok: false, reason: 'no-source', blockingClipId: null };
-    updated = { ...clip, start, duration, mediaIn };
-  } else {
-    const duration = Math.round(nextFrame) - clip.start;
-    if (duration < 1) return { ok: false, reason: 'out-of-range', blockingClipId: null };
-    updated = { ...clip, duration };
+  const memberIds = selectLinkedClosure(s, [id]);
+  const updated: Clip[] = [];
+
+  for (const memberId of memberIds) {
+    const member = s.clips[memberId];
+    if (!member) continue;
+    const memberTrack = s.tracks[member.trackId];
+    if (!memberTrack) return { ok: false, reason: 'no-track', blockingClipId: null };
+    // `blockingClipId` names the MEMBER, so the ghost's badge can say which clip
+    // is on the locked track rather than a lock the user is not touching. The
+    // named clip's own track is checked above and returns null, so the two cases
+    // stay distinguishable at the call site.
+    if (memberTrack.locked) {
+      return { ok: false, reason: 'locked', blockingClipId: member.id };
+    }
+
+    if (edge === 'in') {
+      const start = member.start + delta;
+      if (start < 0) return { ok: false, reason: 'out-of-range', blockingClipId: null };
+      const duration = member.duration - delta;
+      if (duration < 1) return { ok: false, reason: 'out-of-range', blockingClipId: null };
+      const speed = member.properties.speed || 1;
+      const mediaIn = member.mediaIn + Math.round(delta * speed);
+      if (mediaIn < 0) return { ok: false, reason: 'no-source', blockingClipId: null };
+      updated.push({ ...member, start, duration, mediaIn });
+    } else {
+      const duration = member.duration + delta;
+      if (duration < 1) return { ok: false, reason: 'out-of-range', blockingClipId: null };
+      updated.push({ ...member, duration });
+    }
   }
 
-  if (violatesSource(s, updated)) return { ok: false, reason: 'no-source', blockingClipId: null };
+  if (updated.length === 0) return { ok: false, reason: 'no-track', blockingClipId: null };
 
-  const blocking = overlapOnTrack(
-    s,
-    updated.trackId,
-    updated.start,
-    clipEnd(updated),
-    new Set([id]),
-  );
-  if (blocking) return { ok: false, reason: 'overlap', blockingClipId: blocking };
-  return { ok: true, clips: [updated] };
+  const excluded = new Set(updated.map((c) => c.id));
+  for (const c of updated) {
+    if (violatesSource(s, c)) return { ok: false, reason: 'no-source', blockingClipId: null };
+    // Overlap is checked against everything EXCEPT the whole member set, not just
+    // the named clip: a member's own old edge must not block the trim moving it.
+    const blocking = overlapOnTrack(s, c.trackId, c.start, clipEnd(c), excluded);
+    if (blocking) return { ok: false, reason: 'overlap', blockingClipId: blocking };
+  }
+  // …and against each other, exactly as planMove does. A group MAY hold two clips
+  // on one track (§2's repeated sting), and an out-trim extends both by the same
+  // delta, so the earlier member's new end can reach the later member's start.
+  // The exclusion set above cannot see that, and `clipsByTrack`'s no-overlap
+  // invariant is not optional.
+  for (let i = 0; i < updated.length; i += 1) {
+    for (let j = i + 1; j < updated.length; j += 1) {
+      const a = updated[i];
+      const b = updated[j];
+      if (a.trackId === b.trackId && a.start < clipEnd(b) && b.start < clipEnd(a)) {
+        return { ok: false, reason: 'overlap', blockingClipId: b.id };
+      }
+    }
+  }
+  return { ok: true, clips: updated };
 }
 
 /**
@@ -559,6 +739,18 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
 
   /** Restore a document snapshot and re-derive everything history does not cover. */
   const restore = (doc: TimelineDoc, history: TimelineState['history']): void => {
+    // The closure is taken against the RESTORED doc, not against get(): the
+    // snapshot is what carries the linkIds being put back, and get().clips is
+    // still the doc being undone (docs/LINKING.md §3.4). Without this, undoing an
+    // unlink hands back a group with one member selected, and the next Delete
+    // would take half of it.
+    //
+    // pruneSelection returns its ARGUMENT when it drops nothing, and this
+    // preserves that: a restore that changes neither membership nor grouping
+    // hands back the same Set reference, so `selection` compares equal and
+    // nothing re-renders.
+    const pruned = pruneSelection(get().selection, doc.clips);
+    const closed = selectLinkedClosure(doc, pruned);
     set({
       tracks: doc.tracks,
       trackOrder: doc.trackOrder,
@@ -567,7 +759,7 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       markers: doc.markers,
       history,
       historyTxn: null,
-      selection: pruneSelection(get().selection, doc.clips),
+      selection: closed.length === pruned.size ? pruned : new Set(closed),
     });
     get().recomputeOfflineClips();
   };
@@ -700,11 +892,11 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const lane = tracksOfKind(s, origin.kind);
       const deltaTrackIndex = lane.indexOf(next.trackId) - lane.indexOf(clip.trackId);
       if (lane.indexOf(next.trackId) < 0) return { ok: false, reason: 'kind-mismatch' };
-      return get().moveClips([id], next.start - clip.start, deltaTrackIndex);
+      return get().moveClips([id], next.start - clip.start, deltaTrackIndex, clip.trackId);
     },
 
-    moveClips: (ids, deltaFrames, deltaTrackIndex) => {
-      const plan = planMove(get(), ids, deltaFrames, deltaTrackIndex);
+    moveClips: (ids, deltaFrames, deltaTrackIndex, primaryTrackId) => {
+      const plan = planMove(get(), ids, deltaFrames, deltaTrackIndex, primaryTrackId);
       if (!plan.ok) return { ok: false, reason: plan.reason };
       if (Math.round(deltaFrames) === 0 && deltaTrackIndex === 0) return { ok: true };
       pushHistory();
@@ -727,7 +919,7 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
     splitAtPlayhead: () => {
       const s = get();
       const at = s.playhead;
-      const targets: Clip[] = [];
+      let targets: Clip[] = [];
       let blockedByLock = false;
 
       const consider = (clip: Clip | undefined): void => {
@@ -743,19 +935,57 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       if (s.selection.size > 0) for (const id of s.selection) consider(s.clips[id]);
       else for (const clip of Object.values(s.clips)) consider(clip);
 
+      // docs/LINKING.md §5.4 — a group is split whole or not at all, and a lock on
+      // any member the split would WRITE blocks the whole group. The split writes
+      // exactly two kinds of member: the ones the playhead crosses, and the ones
+      // at or after it, which the migration pass below re-links. A member that
+      // ends at or before the playhead is never written, so a lock there is
+      // irrelevant and must not block anything.
+      const grouped = new Set<LinkId>();
+      for (const clip of targets) if (clip.linkId !== undefined) grouped.add(clip.linkId);
+
+      const lockedGroups = new Set<LinkId>();
+      if (grouped.size > 0) {
+        for (const clip of Object.values(s.clips)) {
+          const g = clip.linkId;
+          if (g === undefined || !grouped.has(g)) continue;
+          if (clipEnd(clip) <= at) continue; // never written; a lock here is not a lock on us
+          if (s.tracks[clip.trackId]?.locked) lockedGroups.add(g);
+        }
+      }
+
+      let blockedLinked = false;
+      if (lockedGroups.size > 0) {
+        const kept = targets.filter((c) => c.linkId === undefined || !lockedGroups.has(c.linkId));
+        blockedLinked = kept.length !== targets.length;
+        targets = kept;
+      }
+
+      // A group dropped for a lock withholds clips that are NOT locked and that
+      // the user can see are under the playhead, so it is never silent — the
+      // notice fires whether or not the rest of the timeline still splits.
+      const linkedLockNotice: Notice = {
+        tone: 'warning',
+        title: 'Could not split',
+        message: 'A linked clip is on a locked track',
+      };
+
       // The refusal is raised HERE, not at a call site: the toolbar button and the
       // `S` shortcut are the same registry row, and a check that lives in only one
       // of them makes the control explain itself on click and stay silent on the
-      // key (PLAN §5, and §3.4's "never silent").
+      // key (PLAN §5, and §3.4's "never silent"). Checked in this order, so the
+      // sentence names the cause the user cannot see rather than the one they can.
       if (targets.length === 0) {
         get().setNotice(
-          blockedByLock
-            ? { tone: 'warning', title: 'Could not split', message: 'Track is locked' }
-            : {
-                tone: 'warning',
-                title: 'Nothing to split',
-                message: 'Park the playhead over a clip first',
-              },
+          blockedLinked
+            ? linkedLockNotice
+            : blockedByLock
+              ? { tone: 'warning', title: 'Could not split', message: 'Track is locked' }
+              : {
+                  tone: 'warning',
+                  title: 'Nothing to split',
+                  message: 'Park the playhead over a clip first',
+                },
         );
         return;
       }
@@ -763,6 +993,16 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       pushHistory();
       const next: Clip[] = [];
       const selection = new Set<ClipId>(s.selection);
+
+      /** One fresh LinkId per source group, minted lazily so an ungrouped split allocates nothing. */
+      const rightLink = new Map<LinkId, LinkId>();
+      const rightLinkFor = (g: LinkId): LinkId => {
+        const existing = rightLink.get(g);
+        if (existing !== undefined) return existing;
+        const minted = newId('g');
+        rightLink.set(g, minted);
+        return minted;
+      };
 
       for (const clip of targets) {
         const leftDuration = at - clip.start;
@@ -776,11 +1016,40 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
           mediaIn: clip.mediaIn + Math.round(leftDuration * speed),
           properties: { ...clip.properties },
         };
+        // The LEFT half keeps the original group; the RIGHT halves of one source
+        // group form a new one. Both halves inherit `linkId` from `{ ...clip }`,
+        // so the right half is REASSIGNED rather than assigned — otherwise the
+        // left half of the picture would stay linked to the right half of the
+        // sound, and moving one would drag a clip from the other side of the cut.
+        if (clip.linkId !== undefined) right.linkId = rightLinkFor(clip.linkId);
         next.push(left, right);
         if (selection.has(clip.id)) selection.add(right.id);
       }
 
+      /** The clips the loop above actually cut. Everything else in a split group is below. */
+      const splitIds = new Set(targets.map((c) => c.id));
+
+      // A member the playhead does not cross is not split, and it has to pick a
+      // side — otherwise the left group keeps a member that lies wholly to the
+      // RIGHT of the cut, and moving the left half of the picture drags an
+      // untouched clip a second away. `start >= at` is the test: a member that
+      // straddles `at` was split above, and a member wholly left of `at` stays in
+      // the original group with no write.
+      //
+      // There is deliberately no lock check in this loop. It cannot need one: the
+      // whole-group lock rule above drops any group carrying a locked member that
+      // is not wholly left of the cut, so every clip this loop writes is on an
+      // unlocked track by construction.
+      for (const [source, minted] of rightLink) {
+        for (const clip of Object.values(s.clips)) {
+          if (clip.linkId !== source) continue;
+          if (splitIds.has(clip.id)) continue; // already handled by the loop above
+          if (clip.start >= at) next.push({ ...clip, linkId: minted });
+        }
+      }
+
       set({ ...withClips(docOf(get()), next), selection });
+      if (blockedLinked) get().setNotice(linkedLockNotice);
       get().markDirty();
       // A split mints a new clip id, so the offline projection no longer covers
       // the clip set — same reason deleteSelection and rippleDelete recompute.
@@ -807,12 +1076,16 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       });
 
       get().beginHistory('Detach audio');
-      const detached: Clip[] = [];
+      const pairs: { source: Clip; twinId: ClipId }[] = [];
       let lastHome: TrackId | null = null;
 
       for (const clip of targets) {
         const trackId = findAudioHome(get(), clip);
         lastHome = trackId;
+        // NO linkId is passed: `addClip` commits before it returns, so the twin
+        // would exist in a group of one for the length of one loop iteration, and
+        // `withClips`'s dissolve pass would be entitled to strip it. Both ends
+        // acquire their group in the single write below instead.
         const result = get().addClip({
           mediaId: clip.mediaId,
           trackId,
@@ -836,10 +1109,40 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
           });
           return;
         }
-        detached.push({ ...clip, streams: 'video' });
+        pairs.push({ source: clip, twinId: result.id });
       }
 
-      set(withClips(docOf(get()), detached));
+      // ONE atomic write for every linkId this operation assigns (docs/LINKING.md
+      // §4.3). Both halves of a pair acquire their group in the same `withClips`,
+      // so the ">= 2 members" invariant is never even momentarily false and the
+      // dissolve pass — which runs on every call — cannot strip a half-built group
+      // out from under this action.
+      const detached: Clip[] = [];
+      for (const { source, twinId } of pairs) {
+        // If the picture was already linked to something else, its new sound joins
+        // that group and everything continues to move together. If it was not, the
+        // pair becomes a group of two.
+        const linkId = source.linkId ?? newId('g');
+        const twin = get().clips[twinId];
+        detached.push({ ...source, streams: 'video', linkId });
+        if (twin) detached.push({ ...twin, linkId });
+      }
+      const doc = withClips(docOf(get()), detached);
+      // …and the selection is re-closed in the SAME write. `selectMany` and
+      // `restore` are the two places the closure is normally enforced, and
+      // neither covers this one: the selection was made before the group
+      // existed, so nothing has re-run since the linkIds landed. Leaving it
+      // would put one member of a two-member group in the selection — the exact
+      // state §3.4 calls an invariant of the store — and the inspector, which
+      // counts within the selection, would read `Linked, 1 clips`.
+      //
+      // This is §4.3's stated end state, not a change to it: "selection
+      // unchanged, on the originals", which after §3.2's expansion means the
+      // pair. pruneSelection's return-its-argument property is preserved, so a
+      // detach that somehow closed nothing hands back the same Set reference.
+      const pruned = pruneSelection(get().selection, doc.clips);
+      const closed = selectLinkedClosure(doc, pruned);
+      set({ ...doc, selection: closed.length === pruned.size ? pruned : new Set(closed) });
       get().commitHistory();
       // A detach mints new clip ids and `offlineClipIds` is keyed by CLIP id, so
       // without this a twin cut from an offline source would render with no
@@ -849,8 +1152,88 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       if (lastHome !== null) revealLane(get(), lastHome);
     },
 
+    linkClips: (ids) => {
+      const s = get();
+      // Closure FIRST: linking A to one member of an existing group links A to all
+      // of it, so there is no way to end up half joined.
+      const targets = selectLinkedClosure(s, ids ?? s.selection);
+      if (targets.length < 2) {
+        get().setNotice(linkRefusal(s, ids));
+        return;
+      }
+      // A locked track refuses the WHOLE call rather than excluding that clip: a
+      // silently excluded member would produce a group the user did not ask for
+      // and cannot see the boundary of, and a group containing a locked member
+      // cannot move at all — every subsequent gesture would refuse with a message
+      // about a lock the user has forgotten setting.
+      if (targets.some((id) => s.tracks[s.clips[id]?.trackId ?? '']?.locked === true)) {
+        get().setNotice({ tone: 'warning', title: 'Could not link', message: 'Track is locked' });
+        return;
+      }
+
+      const linkId = newId('g');
+      pushHistory();
+      set({
+        ...withClips(
+          docOf(get()),
+          targets.map((id) => ({ ...s.clips[id], linkId })),
+        ),
+        // Selection becomes the new group, not "unchanged". After the call,
+        // clicking any member selects all of them, so the selection must already
+        // say so — otherwise the very next click would appear to ADD clips the
+        // user thought were already selected.
+        selection: new Set(targets),
+      });
+      get().markDirty();
+    },
+
+    unlinkClips: (ids) => {
+      const s = get();
+      const groups = new Set<LinkId>();
+      for (const id of ids ?? s.selection) {
+        const g = s.clips[id]?.linkId;
+        if (g !== undefined) groups.add(g);
+      }
+      if (groups.size === 0) {
+        get().setNotice({
+          tone: 'warning',
+          title: 'Nothing to unlink',
+          message: 'Select a linked clip first',
+        });
+        return;
+      }
+
+      // A track lock does NOT block an unlink, and the asymmetry with `linkClips`
+      // is deliberate: unlinking removes a constraint, can only ever make more
+      // operations legal, and changes no clip's geometry. Refusing it on a lock
+      // would strand a user who locked a track and then needed to break a group
+      // that reaches into it.
+      const members: Clip[] = [];
+      for (const clip of Object.values(s.clips)) {
+        if (clip.linkId === undefined || !groups.has(clip.linkId)) continue;
+        // The key is STRIPPED, never set to undefined: an own property with an
+        // undefined value survives an `in` check and a key count, and JSON.stringify
+        // drops it — so the in-memory clip and the saved clip would disagree about
+        // their own shape. `migrateProject` establishes the same rest-destructure.
+        const { linkId: _drop, ...rest } = clip;
+        members.push(rest);
+      }
+
+      pushHistory();
+      set(withClips(docOf(get()), members));
+      // Selection is unchanged, and after the call it holds every former member —
+      // which is what makes the next click meaningful: clicking one of them now
+      // selects that clip alone.
+      get().markDirty();
+    },
+
     deleteSelection: () => {
       const s = get();
+      const lockedLinked = lockedLinkedClipId(s);
+      if (lockedLinked !== null) {
+        get().setNotice(LOCKED_LINKED_DELETE_NOTICE);
+        return;
+      }
       const ids = selectDeletableClipIds(s);
       if (ids.length === 0) {
         // Every id in `selection` exists in `clips` (§3.4), so a non-empty
@@ -875,7 +1258,12 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
 
     rippleDelete: () => {
       const s = get();
-      const removing = selectDeletableClipIds(s).map((id) => s.clips[id]);
+      if (lockedLinkedClipId(s) !== null) {
+        get().setNotice(LOCKED_LINKED_DELETE_NOTICE);
+        return;
+      }
+      const removingIds = selectDeletableClipIds(s);
+      const removing = removingIds.map((id) => s.clips[id]);
       if (removing.length === 0) {
         if (s.selection.size > 0) {
           get().setNotice({
@@ -886,8 +1274,7 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
         }
         return;
       }
-
-      pushHistory();
+      const removedIdSet = new Set(removingIds);
 
       const removedByTrack = new Map<TrackId, Clip[]>();
       for (const clip of removing) {
@@ -896,26 +1283,106 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
         else removedByTrack.set(clip.trackId, [clip]);
       }
 
-      const shifted: Clip[] = [];
+      // Step 1 — today's per-clip shift, per track, for every surviving clip on a
+      // track something was removed from. A clip with nothing removed before it
+      // gets an entry of 0, not no entry: step 2 has to tell "did not move" apart
+      // from "was not considered", and both are 0.
+      const perClip = new Map<ClipId, Frames>();
       for (const [trackId, gone] of removedByTrack) {
-        const goneIds = new Set(gone.map((c) => c.id));
         for (const id of s.clipsByTrack[trackId] ?? []) {
-          if (goneIds.has(id)) continue;
+          if (removedIdSet.has(id)) continue;
           const clip = s.clips[id];
           if (!clip) continue;
-          // Everything strictly after a removed clip closes up by that clip's length.
           let delta = 0;
           for (const removed of gone) if (clipEnd(removed) <= clip.start) delta += removed.duration;
-          if (delta > 0) shifted.push({ ...clip, start: Math.max(0, clip.start - delta) });
+          perClip.set(id, delta);
         }
       }
 
-      const doc = withClips(
-        docOf(get()),
-        shifted,
-        removing.map((c) => c.id),
-      );
-      set({ ...doc, selection: EMPTY_SELECTION });
+      // Step 2 — a group moves as one or not at all (docs/LINKING.md §5.5). Every
+      // surviving group is WHOLE, because the delete set is a closure and a lock
+      // refuses the call, so this is a statement about a complete membership.
+      //
+      // A member at shift 0 is a member with nothing removed before it: it has no
+      // room to move left and no reason to, because the gap that closed is not in
+      // front of it. So the whole group holds still — uniform, safe by
+      // construction, and exactly the pre-linking behaviour for a group that spans
+      // the cut.
+      const membersOfGroup = new Map<LinkId, Clip[]>();
+      for (const clip of Object.values(s.clips)) {
+        if (removedIdSet.has(clip.id) || clip.linkId === undefined) continue;
+        const list = membersOfGroup.get(clip.linkId);
+        if (list) list.push(clip);
+        else membersOfGroup.set(clip.linkId, [clip]);
+      }
+      const perGroup = new Map<LinkId, Frames>();
+      for (const [group, members] of membersOfGroup) {
+        let shift = 0;
+        for (const member of members) {
+          const own = perClip.get(member.id) ?? 0;
+          if (own === 0) {
+            shift = 0;
+            break;
+          }
+          if (own > shift) shift = own;
+        }
+        perGroup.set(group, shift);
+      }
+
+      const shiftOf = (clip: Clip): Frames =>
+        clip.linkId !== undefined
+          ? (perGroup.get(clip.linkId) ?? 0)
+          : (perClip.get(clip.id) ?? 0);
+
+      // Walked in clipsByTrack order so the clip the refusal names is deterministic.
+      const shifted: Clip[] = [];
+      let negative: Clip | null = null;
+      for (const trackId of s.trackOrder) {
+        for (const id of s.clipsByTrack[trackId] ?? []) {
+          if (removedIdSet.has(id)) continue;
+          const clip = s.clips[id];
+          if (!clip) continue;
+          const shift = shiftOf(clip);
+          if (shift === 0) continue;
+          const start = clip.start - shift;
+          if (start < 0 && negative === null) negative = clip;
+          shifted.push({ ...clip, start });
+        }
+      }
+
+      // Step 3 — validate, and change NOTHING on a refusal. Per-track ripple could
+      // never collide, which is why there was no check at all; a group shift moves
+      // clips on tracks that had no removal, so it can. The old
+      // `Math.max(0, start - delta)` clamp is gone rather than kept "just in case":
+      // a clamp is what desyncs, by silently giving one member a shorter shift
+      // than its partner.
+      const candidate = withClips(docOf(s), shifted, removingIds);
+      if (negative !== null) {
+        get().setNotice({
+          tone: 'warning',
+          title: 'Could not ripple delete',
+          message: `${negative.name} would be pushed before the start of the timeline, so unlink it first`,
+        });
+        return;
+      }
+      const collision = firstOverlap(candidate);
+      if (collision) {
+        const previous = candidate.clips[collision.previousId];
+        const later = candidate.clips[collision.id];
+        // The linked one is named first; otherwise the pair is named in track order.
+        const swap = later?.linkId !== undefined && previous?.linkId === undefined;
+        const a = swap ? later : previous;
+        const b = swap ? previous : later;
+        get().setNotice({
+          tone: 'warning',
+          title: 'Could not ripple delete',
+          message: `${a?.name ?? 'A clip'} and ${b?.name ?? 'another clip'} would overlap after the gap closes, so unlink them first`,
+        });
+        return;
+      }
+
+      pushHistory();
+      set({ ...candidate, selection: EMPTY_SELECTION });
       get().markDirty();
       get().recomputeOfflineClips();
     },
@@ -928,7 +1395,13 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
 
     selectMany: (ids, mode) => {
       const s = get();
-      const valid = ids.filter((id) => s.clips[id] !== undefined);
+      // Expansion happens HERE and nowhere else (docs/LINKING.md §3.2). Every
+      // selection path in the app — click, shift-range, ctrl-toggle, marquee,
+      // keyboard travel, the context menu's pre-selection — funnels through this
+      // action, so one call closes the rule for all of them.
+      // `selectLinkedClosure` already drops ids that are not in `clips`, which is
+      // what the old `valid` filter was for.
+      const valid = selectLinkedClosure(s, ids);
       if (mode === 'replace') {
         if (valid.length === s.selection.size && valid.every((id) => s.selection.has(id))) return;
         set({ selection: new Set(valid) });
@@ -1168,7 +1641,14 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const s = get();
       const next: Clip[] = [];
 
-      for (const id of ids) {
+      // `speed` is the one property that changes GEOMETRY: PLAN §2.4 rule 4
+      // rescales duration from it, twenty lines below. Every other field here is
+      // inert on the timeline, and per-member volume is exactly what a user wants
+      // — quieting a detached sound without touching the picture it is linked to
+      // (docs/LINKING.md §5.6).
+      const targets = patch.speed !== undefined ? selectLinkedClosure(s, ids) : ids;
+
+      for (const id of targets) {
         const clip = s.clips[id];
         if (!clip) continue;
         if (s.tracks[clip.trackId]?.locked) return { ok: false, reason: 'locked' };
@@ -1337,12 +1817,78 @@ export const selectClipIdsInTrack = (s: StoreState, t: TrackId): readonly ClipId
  */
 export const selectDeletableClipIds = (s: StoreState): ClipId[] => {
   const out: ClipId[] = [];
-  for (const id of s.selection) {
+  // The closure is taken HERE rather than being assumed of `s.selection`
+  // (docs/LINKING.md §5.5). `restore` keeps the selection closed, but a selector
+  // that would silently halve a group if the selection ever were not is a
+  // selector with a trap in it — and the keyboard layer's focus hand-off asks
+  // this same question, so it gets the same answer.
+  for (const id of selectLinkedClosure(s, s.selection)) {
     const clip = s.clips[id];
     if (clip && !s.tracks[clip.trackId]?.locked) out.push(id);
   }
   return out;
 };
+
+/**
+ * A member of a group the selection touches that a track lock protects, or null.
+ * Delete is all-or-nothing across a group (docs/LINKING.md §0.2 rule 2), and a
+ * lock is the one thing that can make that impossible.
+ *
+ * Without this, `selectDeletableClipIds` would drop the locked member, delete the
+ * rest, and the dissolve pass would strip the survivor's `linkId` — a silent,
+ * partial application of an all-or-nothing operation.
+ */
+export const lockedLinkedClipId = (s: StoreState): ClipId | null => {
+  for (const id of selectLinkedClosure(s, s.selection)) {
+    const clip = s.clips[id];
+    if (clip?.linkId !== undefined && s.tracks[clip.trackId]?.locked) return id;
+  }
+  return null;
+};
+
+/** Checked FIRST, so the sentence names the cause the user cannot see. */
+const LOCKED_LINKED_DELETE_NOTICE: Notice = {
+  tone: 'warning',
+  title: 'Could not delete',
+  message: 'A linked clip is on a locked track',
+};
+
+/**
+ * Why a link found nothing to do (docs/LINKING.md §4.1), checked in that order.
+ * Exported because the context menu shows the same sentence as the item's
+ * `disabledReason` — one copy of the copy, the pattern `detachRefusal` set.
+ *
+ * There is deliberately no "these are already linked to each other" refusal:
+ * re-linking mints a new LinkId over the same membership, which is a harmless
+ * no-op costing one undo slot.
+ */
+export function linkRefusal(s: StoreState, ids?: Iterable<ClipId>): Notice {
+  const targets = selectLinkedClosure(s, ids ?? s.selection);
+  if (targets.length < 2) {
+    return { tone: 'warning', title: 'Nothing to link', message: 'Select two or more clips first' };
+  }
+  return { tone: 'warning', title: 'Could not link', message: 'Track is locked' };
+}
+
+/**
+ * The first adjacent pair that overlaps, or null. O(clips): `clipsByTrack` is
+ * sorted ascending by start with no overlaps in a valid doc, so checking adjacent
+ * pairs is sufficient — a clip that overlaps a non-adjacent one necessarily
+ * overlaps the one between them.
+ *
+ * It returns the PAIR, not one id: the refusal copy has to name the linked clip,
+ * and either of the two may be the linked one.
+ */
+function firstOverlap(doc: TimelineDoc): { id: ClipId; previousId: ClipId } | null {
+  for (const ids of Object.values(doc.clipsByTrack)) {
+    for (let i = 1; i < ids.length; i += 1) {
+      const a = doc.clips[ids[i - 1]];
+      const b = doc.clips[ids[i]];
+      if (a && b && b.start < clipEnd(a)) return { id: b.id, previousId: a.id };
+    }
+  }
+  return null;
+}
 
 /**
  * [UNSTABLE REFERENCE] readStore() only. THE eligibility rule for a detach, once

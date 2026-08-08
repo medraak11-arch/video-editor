@@ -23,6 +23,6 @@ export function nanoid(size = SIZE): string {
   return out;
 }
 
-export function newId(prefix: 'm' | 'c' | 't' | 'k'): string {
+export function newId(prefix: 'm' | 'c' | 't' | 'k' | 'g'): string {
   return `${prefix}_${nanoid()}`;
 }

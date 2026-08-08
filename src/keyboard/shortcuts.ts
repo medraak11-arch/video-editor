@@ -56,6 +56,11 @@ export type ShortcutId =
   // null for an unknown id — so without this row the menu would silently
   // promise a key that does not exist.
   | 'edit.detachAudio'
+  // docs/LINKING.md §7.1. The clip context menu renders <ShortcutHint> for both,
+  // and the shortcut overlay lists them, so the two commands are discoverable
+  // from the application rather than only from the README.
+  | 'edit.link'
+  | 'edit.unlink'
   | 'help.shortcuts';
 
 /** The name of the function `useShortcuts` dispatches to. One per registry row. */
@@ -87,6 +92,8 @@ export type ShortcutHandlerName =
   | 'addMarker'
   | 'clearSelection'
   | 'detachAudio'
+  | 'linkClips'
+  | 'unlinkClips'
   | 'toggleShortcutOverlay';
 
 export interface ShortcutDef {
@@ -134,6 +141,17 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   // Timeline-scoped like the other destructive-ish edits: Shift+D in the media
   // rail must never restructure the timeline. Not repeatable — see below.
   { id: 'edit.detachAudio', keys: ['Shift+D'], label: 'Detach audio', scope: 'timeline', handler: 'detachAudio' },
+  // docs/LINKING.md §7. Ctrl+L is the Link binding in Premiere and in Final Cut,
+  // and it is unclaimed here: the bare `L` that shuttles forward normalises to
+  // the combo string 'L', which is not 'Ctrl+L', so the two can never match the
+  // same event. Ctrl+Shift+L is the paired inverse, in the shape Ctrl+Z /
+  // Ctrl+Shift+Z already establishes for an operation and its opposite.
+  //
+  // Timeline-scoped like every other structural edit: Ctrl+L with focus in the
+  // media rail must not restructure the timeline. Neither is repeatable — holding
+  // Ctrl+L must not mint a new LinkId sixty times a second.
+  { id: 'edit.link', keys: ['Ctrl+L'], label: 'Link selected clips', scope: 'timeline', handler: 'linkClips' },
+  { id: 'edit.unlink', keys: ['Ctrl+Shift+L'], label: 'Unlink selected clips', scope: 'timeline', handler: 'unlinkClips' },
   { id: 'edit.undo', keys: ['Ctrl+Z'], label: 'Undo', scope: 'global', handler: 'undo' },
   { id: 'edit.redo', keys: ['Ctrl+Shift+Z'], label: 'Redo', scope: 'global', handler: 'redo' },
   { id: 'edit.clearSelection', keys: ['Escape'], label: 'Clear selection', scope: 'global', handler: 'clearSelection' },

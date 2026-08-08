@@ -10,6 +10,7 @@
 import type {
   Clip,
   ClipStreams,
+  LinkId,
   Marker,
   MediaItem,
   PersistedMediaItem,
@@ -135,6 +136,16 @@ const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Num
 const streamsOf = (v: unknown): ClipStreams | undefined =>
   v === 'video' || v === 'audio' ? v : undefined;
 
+/**
+ * A SANITISER, not a validator — the same contract `streamsOf` has (LINKING §11.5).
+ * Anything that is not a non-empty string collapses to undefined, which
+ * `clipLinkId` reads as "ungrouped". Dropping a whole clip because a hand-edited
+ * file has a numeric linkId would lose the user's edit over a typo, and
+ * `describeProjectProblem` has no sentence for it.
+ */
+const linkIdOf = (v: unknown): LinkId | undefined =>
+  typeof v === 'string' && v !== '' ? v : undefined;
+
 function validClip(v: unknown): v is Clip {
   if (!isObject(v)) return false;
   return (
@@ -221,6 +232,44 @@ export function migrateProject(raw: unknown): ProjectFile | null {
     (id): id is string => typeof id === 'string' && trackIds.has(id),
   );
 
+  // The map returns the ORIGINAL object unless the key is actually wrong, so an
+  // untouched project allocates no new clip records on open (AUDIO-FEATURES §1.2).
+  const kept = raw.clips
+    .filter(validClip)
+    .filter((c) => trackIds.has(c.trackId))
+    .map((c) => {
+      const value = (c as { streams?: unknown }).streams;
+      // Absent (every legacy clip), or already 'video'/'audio': `c` is correct as-is.
+      if (value === undefined || streamsOf(value) !== undefined) return c;
+      // Explicit 'av', or garbage from a hand-edited file: DROP the key. Leaving
+      // it would hand the bad value straight to `clipStreams`, whose `??` only
+      // catches null/undefined — `detachAudio`'s `!== 'av'` guard would then skip
+      // the clip forever, and the next save would persist the garbage.
+      const { streams: _drop, ...rest } = c;
+      return rest;
+    });
+
+  // A LinkId that survives on fewer than two clips is a group of one, and the
+  // §1.1 invariant says those do not exist. This is reachable through no fault of
+  // the user: the filters above drop a clip whose trackId no longer resolves, and
+  // its partner would otherwise load carrying a rail and a group with nobody in
+  // it. Counted over the FILTERED array, which is why it is a second pass rather
+  // than part of the map (LINKING §11.5).
+  const census = new Map<string, number>();
+  for (const c of kept) {
+    const g = linkIdOf((c as { linkId?: unknown }).linkId);
+    if (g !== undefined) census.set(g, (census.get(g) ?? 0) + 1);
+  }
+  const clips = kept.map((c) => {
+    const rawLink = (c as { linkId?: unknown }).linkId;
+    const g = linkIdOf(rawLink);
+    const keep = g !== undefined && (census.get(g) ?? 0) >= 2;
+    if (keep && rawLink === g) return c;
+    if (!keep && rawLink === undefined) return c;
+    const { linkId: _drop, ...rest } = c;
+    return keep ? { ...rest, linkId: g } : rest;
+  });
+
   return {
     version: PROJECT_VERSION,
     name: typeof raw.name === 'string' && raw.name.trim() !== '' ? raw.name : 'Untitled',
@@ -230,22 +279,7 @@ export function migrateProject(raw: unknown): ProjectFile | null {
     media: raw.media.filter(validMedia),
     tracks,
     trackOrder,
-    // The map returns the ORIGINAL object unless the key is actually wrong, so an
-    // untouched project allocates no new clip records on open (§1.2).
-    clips: raw.clips
-      .filter(validClip)
-      .filter((c) => trackIds.has(c.trackId))
-      .map((c) => {
-        const value = (c as { streams?: unknown }).streams;
-        // Absent (every legacy clip), or already 'video'/'audio': `c` is correct as-is.
-        if (value === undefined || streamsOf(value) !== undefined) return c;
-        // Explicit 'av', or garbage from a hand-edited file: DROP the key. Leaving
-        // it would hand the bad value straight to `clipStreams`, whose `??` only
-        // catches null/undefined — `detachAudio`'s `!== 'av'` guard would then skip
-        // the clip forever, and the next save would persist the garbage.
-        const { streams: _drop, ...rest } = c;
-        return rest;
-      }),
+    clips,
     markers: Array.isArray(raw.markers) ? raw.markers.filter(validMarker) : [],
     savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
   };

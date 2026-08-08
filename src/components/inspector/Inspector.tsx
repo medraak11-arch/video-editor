@@ -17,7 +17,7 @@ import { useMemo } from 'react';
 import type { ReactElement } from 'react';
 import { Panel } from '../ui';
 import { useEditorStore } from '../../state/store';
-import type { Clip } from '../../types/model';
+import type { Clip, LinkId } from '../../types/model';
 import { clipStreams } from '../../types/model';
 import { ClipPropertyRow } from './ClipPropertyRow';
 import { InspectorGroup } from './InspectorGroup';
@@ -66,6 +66,27 @@ export function Inspector(): ReactElement {
   const audioOnly = uniformStreams === 'audio';
   const videoOnly = uniformStreams === 'video';
 
+  /**
+   * The group's size, spelled out on the same pattern (docs/LINKING.md §8.5).
+   * One number per GROUP, never one number across groups: "Linked, 4 clips" over
+   * two independent pairs asserts a four-member group that does not exist, which
+   * is a fabricated fact in a read-out whose whole job is to name the group's
+   * size. Both branches are plural by construction — a group holds at least two
+   * clips, and the `groups` branch is only reached at two or more.
+   *
+   * Counting WITHIN the selection is counting the whole group, because the
+   * selection is always a closure.
+   */
+  const linked = useMemo(() => {
+    const sizes = new Map<LinkId, number>();
+    for (const c of clips) {
+      if (c.linkId !== undefined) sizes.set(c.linkId, (sizes.get(c.linkId) ?? 0) + 1);
+    }
+    if (sizes.size === 0) return null;
+    if (sizes.size > 1) return `Linked, ${sizes.size} groups`;
+    return `Linked, ${[...sizes.values()][0]} clips`;
+  }, [clips]);
+
   const first = clips[0];
   const heading =
     clips.length === 0
@@ -92,6 +113,17 @@ export function Inspector(): ReactElement {
                 <p className="ve-inspector-streams type-label">
                   {audioOnly ? 'Audio only' : 'Video only'}
                 </p>
+              ) : null}
+              {/* The same kind of thing as `Audio only`: a spelled-out fact at
+                  the same type step, in the same identity block, so it reuses
+                  .ve-inspector-streams rather than inventing a second class name
+                  with identical declarations. A READ-OUT, not a control — Link
+                  and Unlink live in the context menu and on the keyboard, where
+                  every other structural edit in this app lives. The count uses
+                  the sans, not .type-numeric: it changes when the selection
+                  changes, which is a re-render, not a tick. */}
+              {linked !== null ? (
+                <p className="ve-inspector-streams type-label">{linked}</p>
               ) : null}
             </div>
 

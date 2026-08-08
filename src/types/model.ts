@@ -26,6 +26,14 @@ export type MediaId = string; // 'm_' + nanoid
 export type ClipId = string; // 'c_' + nanoid
 export type TrackId = string; // 't_' + nanoid
 export type MarkerId = string; // 'k_' + nanoid
+/**
+ * 'g_' + nanoid. The identity of a link group; it names no other thing.
+ *
+ * The prefix is `g`, not `l`: ids are read in the mono face, where `l_` and `1_`
+ * are near-indistinguishable, and this project's ids are read by humans — in
+ * `data-clip-id`, in a hand-inspected `.veproj`, and through CDP.
+ */
+export type LinkId = string; // 'g_' + nanoid
 
 /* ----------------------------------------------------------------- 2.3 Media */
 
@@ -145,6 +153,19 @@ export interface Clip {
   properties: ClipProperties;
   /** Undefined ≡ 'av'. Written only by `detachAudio`; see docs/AUDIO-FEATURES.md §1.1. */
   streams?: ClipStreams;
+  /**
+   * The link group this clip belongs to, or absent when it belongs to none.
+   *
+   * ABSENT means ungrouped. Optional for the same two reasons `streams` is: a
+   * .veproj written before this feature has no such key and must stay a valid
+   * project file rather than become a migration, and an ordinary clip must not
+   * carry a redundant field into every save. Read it through `clipLinkId`.
+   *
+   * INVARIANT: every LinkId present in the store is carried by at least two
+   * clips. A group of one is meaningless and is dissolved at the single choke
+   * point that can create one — see docs/LINKING.md §5.1.
+   */
+  linkId?: LinkId;
 }
 
 /** Exclusive end. There is no `end` field — derive it, always, with this helper. */
@@ -156,6 +177,11 @@ export const clipStreams = (c: Clip): ClipStreams => c.streams ?? 'av';
 export const clipHasVideo = (c: Clip): boolean => clipStreams(c) !== 'audio';
 /** True when this clip puts samples in the mix. */
 export const clipHasAudio = (c: Clip): boolean => clipStreams(c) !== 'video';
+
+/** THE reader. Nothing anywhere may write `c.linkId ?? null` inline. */
+export const clipLinkId = (c: Clip): LinkId | null => c.linkId ?? null;
+/** True when this clip moves with others. */
+export const clipIsLinked = (c: Clip): boolean => c.linkId !== undefined;
 
 /** Source frames this clip consumes. THE source-mapping primitive (PLAN §2.4). */
 export const clipSourceLength = (c: Clip): Frames => Math.round(c.duration * c.properties.speed);

@@ -802,6 +802,8 @@ are session-only and are never persisted. No other slice reads or writes this ke
 `addClip`, `insertMediaAt`, `moveClip`, `moveClips`, `trimClip`, `splitAtPlayhead`,
 `deleteSelection`, `rippleDelete`, `detachAudio`, `addTrack`, `removeTrack`, `setTrackHeight`,
 `toggleMute`, `toggleLock`, `toggleVisible`, `addMarker`, `removeMarker`, `updateClipProperties`,
+`linkClips`, `unlinkClips` (docs/LINKING.md §11.2 amendment B5 — both change the document and both
+push one history entry),
 `renameClip`, `clampClipsToSource` (only when it changed something), `undo`, `redo`, `addItem`,
 `removeItem`, `setProjectName`, `setProjectFps`, `setProjectSize`, `adoptSourceFormat`, and
 `restoreRecovery` (docs/SAFETY.md §9.6 — restored state matches nothing on disk, so it is dirty by

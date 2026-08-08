@@ -53,7 +53,7 @@ cross-cutting list, so all four are routed the same way. An earlier draft took `
 
 ### 0.3 What is deliberately not here
 
-No link/unlink model (§1.6). No re-attach. No waveform rendering. No per-clip audio channel
+No re-attach. No waveform rendering. No per-clip audio channel
 selection (a 5.1 source is downmixed to stereo by the existing `aformat`, unchanged). No audio-only
 *import* changes — `MediaItem.kind` and probing are untouched. No `-an` "silent video" export option
 (§3.2). No new colour, no new token, no new texture.
@@ -124,7 +124,7 @@ the detach must stop contributing sound while staying on its video track, and th
 record that. It would also make `clipKind` circular — the kind is derived from the track, and the
 legal track is derived from the kind.
 
-**Rejected — a `linkId` pair.** See §1.6; that is a different feature, not a different encoding.
+**Rejected — a `linkId` pair.** That is a different feature, not a different encoding: it records which clips move together, not which streams a clip uses. It was later built, on those terms and beside `streams` rather than instead of it — `docs/LINKING.md` §1.1.
 
 #### One property this field does not have
 
@@ -172,7 +172,8 @@ byte-identical clip array. A `.veproj` is a JSON file a user may keep in git, an
 rewrites forty clips to add a field meaning "unchanged" makes the diff useless.
 
 **`splitAtPlayhead` needs no change.** It builds both halves with `{ ...clip, … }`, so `streams`
-propagates to both by construction. Verified by reading `timelineSlice.ts:693-700`. The same holds
+propagates to both by construction. `linkId` does **not** survive a split unexamined — see
+docs/LINKING.md §5.4. Verified by reading `timelineSlice.ts:693-700`. The same holds
 for the history snapshot: `TimelineDoc` carries whole `Clip` records, so undo/redo restore `streams`
 with no per-field work.
 
@@ -295,8 +296,8 @@ does not flag here.
  * refusal, raised HERE rather than at the two call sites, so the menu item and
  * the shortcut cannot explain themselves differently.
  *
- * The pair is INDEPENDENT afterwards (§1.6). One history entry for the whole
- * operation, including any tracks it had to create.
+ * The pair is LINKED afterwards (docs/LINKING.md §4.3). One history entry for
+ * the whole operation, including any tracks it had to create.
  */
 detachAudio(ids?: ClipId[]): void;
 ```
@@ -476,35 +477,15 @@ run. `abortHistory` restores the snapshot *and* removes any track this operation
 precisely why the whole thing is one transaction. This mirrors `insertMediaAt`'s
 "a refused clip must not leave a stray empty track behind" comment verbatim.
 
-### 1.6 Linking: rejected, and the pair is fully independent
+### 1.6 Linking — **superseded in full by `docs/LINKING.md`**
 
-After `detachAudio` the two clips have no relationship the store can see. They share a `mediaId` and
-nothing else. Selecting one does not select the other. Moving, trimming, splitting, renaming,
-re-speeding, deleting or ripple-deleting one does not touch the other.
-
-**Why not linked.** Linking is not a field, it is a cross-cutting rule that every mutation in
-`timelineSlice.ts` would have to honour:
-
-- `planMove` would have to plan across two tracks at once and fail whole when only one of them is
-  blocked — a second, harder overlap problem, since the partner may face a different neighbour.
-- `trimClip` would need a partner trim that can independently violate `no-source`.
-- `splitAtPlayhead` would have to split both and link the two new pairs.
-- `rippleDelete` closes the gap "on the affected tracks"; with links, deleting one clip makes a
-  second track's gap close too, and undo has to restore both.
-- Links have to survive `.veproj` round-trips, which means a persisted id, which means the
-  version-and-migration problem in §1.1 all over again — for a field with no default that makes
-  sense.
-- And the user would immediately need an *unlink* command, because the whole stated purpose is to
-  delete one half.
-
-Independence is not the lazy option; it is the option that matches the request. The user asked to
-delete the picture and keep the sound. A model where the two are joined makes that the *hard* path.
-The app already teaches this: `splitAtPlayhead` produces two independent clips out of one, and nobody
-expects them to move together.
-
-**The honest cost, stated:** if you detach and then drag the video clip, the sound does not follow.
-Recover with undo, or move both (they are adjacent and a marquee selects both). This belongs in
-README's *Known limitations*, worded as a decision — see §7.
+This section argued that linking is not a field but a cross-cutting rule every mutation must honour,
+and that a joined model makes *delete the picture, keep the sound* the hard path — and both sentences
+are still true. `docs/LINKING.md` re-decided which of the two costs is larger: the cross-cutting work
+is bounded at five mutations and one selection rule, and silent desync is not. **`detachAudio` now
+links the picture and the sound it cuts out**; the reasoning this section recorded is preserved
+verbatim as `docs/LINKING.md` §0.1, together with why the trade was reversed. There is no build in
+which both models exist.
 
 ### 1.7 Every consumer, and the exact change
 
@@ -1864,7 +1845,7 @@ change.
 | `docs/AUDIO-MONITOR.md` §1.1 | `monitorAudible`'s predicate list gains `clipHasAudio`, alongside the existing note about which fields are deliberately absent. |
 | `docs/AUDIO-MONITOR.md` §7.3 | Priority item 1, *"The clock clip (always — it is the picture's own sound)"*, becomes *"always, **when it has one** — a video-only clip carries no sound and takes no slot"*. §1.7.2. |
 | `docs/SAFETY.md` §8 file table | Amendment A3: the `src/lib/project.ts` row's *"`migrateProject` … unchanged"* becomes *"unchanged by this document"*. |
-| `README.md` "Known limitations" | Two entries: **"Detached audio is not linked to its picture"** (§1.6, worded as a decision), and **"Audio-only exports always produce a stereo 48 kHz file"** (§2.1). |
+| `README.md` "Known limitations" | Two entries: **"Detached audio is not linked to its picture"** (§1.6, worded as a decision) — *replaced by `docs/LINKING.md` §11.7's "Linked clips move as one"* — and **"Audio-only exports always produce a stereo 48 kHz file"** (§2.1). |
 | `README.md` feature list | Mention detach audio and the three audio output formats. |
 
 ---
@@ -1873,8 +1854,8 @@ change.
 
 | Not built | Why | What would change my mind |
 |---|---|---|
-| Link / unlink | §1.6 — a cross-cutting rule over every mutation, not a field | The user wanting picture and sound to move together often enough that manual co-selection is the friction |
-| Re-attach audio | The inverse of a lossy operation; it would have to guess which twin belongs to which original, and independence (§1.6) means there is no answer | A `linkId` existing for another reason |
+| ~~Link / unlink~~ | **Built** — `docs/LINKING.md` reversed §1.6. Manual co-selection on every subsequent move was exactly the friction that row named. | — |
+| Re-attach audio | The inverse of a lossy operation; it would have to guess which twin belongs to which original. `Link` makes the two halves move together (`docs/LINKING.md` §0.3); it does not merge them back into one `av` clip. | — |
 | A fifth clip texture for stream identity | §1.8 — PLAN §7.6's four-texture table is closed on angle/pitch distinguishability | A measured demonstration that a fifth angle survives deuteranopia at 8 px |
 | FLAC, ALAC, Opus | §2.1 | A specific destination that refuses WAV and AAC |
 | A free-form audio bitrate field | §2.1 — three quality steps already map to three bitrates | — |

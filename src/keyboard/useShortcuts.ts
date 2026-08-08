@@ -137,6 +137,11 @@ const HANDLERS: Record<ShortcutHandlerName, () => void> = {
   // (AUDIO-FEATURES §7.4, §1.5). Unlike lift/rippleDelete it destroys no DOM
   // node that could be holding focus, so no hand-off is needed.
   detachAudio: () => readStore().detachAudio(),
+  // Same shape, same reason (docs/LINKING.md §7.1): each action decides whether
+  // it has anything to do and raises its own notice when it does not, and neither
+  // destroys a DOM node that could be holding focus.
+  linkClips: () => readStore().linkClips(),
+  unlinkClips: () => readStore().unlinkClips(),
   undo: () => readStore().undo(),
   redo: () => readStore().redo(),
   clearSelection: () => readStore().clearSelection(),

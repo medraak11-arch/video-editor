@@ -19,11 +19,16 @@
 import './timeline.css';
 import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { AudioLines, Scissors, Trash2, X } from 'lucide-react';
+import { AudioLines, Link2, Scissors, Trash2, Unlink2, X } from 'lucide-react';
 import type { ClipId } from '../../types/model';
 import { clipEnd } from '../../types/model';
 import { readStore } from '../../state/store';
-import { detachRefusal, selectDetachableClipIds } from '../../state/timelineSlice';
+import {
+  detachRefusal,
+  linkRefusal,
+  selectDetachableClipIds,
+  selectLinkedClosure,
+} from '../../state/timelineSlice';
 import type { StoreState } from '../../state/types';
 import { ShortcutHint } from '../../keyboard/ShortcutHint';
 import { Menu } from '../ui';
@@ -48,6 +53,12 @@ const allLocked = (s: StoreState, ids: readonly ClipId[]): boolean =>
   ids.every((id) => {
     const clip = s.clips[id];
     return clip ? s.tracks[clip.trackId]?.locked === true : true;
+  });
+
+const anyLocked = (s: StoreState, ids: readonly ClipId[]): boolean =>
+  ids.some((id) => {
+    const clip = s.clips[id];
+    return clip !== undefined && s.tracks[clip.trackId]?.locked === true;
   });
 
 const anySplittable = (s: StoreState, ids: readonly ClipId[]): boolean =>
@@ -97,6 +108,15 @@ export const ClipContextMenu = forwardRef<ClipContextMenuHandle>(function ClipCo
     const lockedAll = allLocked(s, ids);
     const splittable = anySplittable(s, ids);
 
+    // Decided over the same `effectiveIds` every other item uses, and over the
+    // same closure `linkClips` takes (docs/LINKING.md §8.6). Both items are
+    // enabled or disabled, never hidden: PLAN preamble S4's "do not render an
+    // inapplicable control" governs controls that are IRRELEVANT to the
+    // selection, and these two are always relevant to a clip.
+    const closure = selectLinkedClosure(s, ids);
+    const linkable = closure.length >= 2 && !anyLocked(s, closure);
+    const unlinkable = ids.some((id) => s.clips[id]?.linkId !== undefined);
+
     return [
       {
         kind: 'item',
@@ -109,6 +129,28 @@ export const ClipContextMenu = forwardRef<ClipContextMenuHandle>(function ClipCo
         // the menu: one copy of the copy, living in the action.
         disabledReason: detachable ? undefined : detachRefusal(s, ids).message,
         onSelect: () => readStore().detachAudio(),
+      },
+      {
+        kind: 'item',
+        id: 'link',
+        label: 'Link',
+        icon: <Link2 size={14} strokeWidth={1.75} />,
+        shortcut: <ShortcutHint id="edit.link" />,
+        disabled: !linkable,
+        // §4.1's own table, reused verbatim, so the menu and the keystroke cannot
+        // explain themselves differently.
+        disabledReason: linkable ? undefined : linkRefusal(s, ids).message,
+        onSelect: () => readStore().linkClips(),
+      },
+      {
+        kind: 'item',
+        id: 'unlink',
+        label: 'Unlink',
+        icon: <Unlink2 size={14} strokeWidth={1.75} />,
+        shortcut: <ShortcutHint id="edit.unlink" />,
+        disabled: !unlinkable,
+        disabledReason: unlinkable ? undefined : 'Select a linked clip first',
+        onSelect: () => readStore().unlinkClips(),
       },
       { kind: 'separator', id: 'sep' },
       {

@@ -360,6 +360,53 @@
   border-color: var(--status-danger);
 }
 
+/* THE LINK RAIL — docs/LINKING.md §8.1.
+
+   Linking is not a STATE, so it does not enter PLAN §7.6's texture table, and it
+   is not hue. It is carried by a mark at a fixed position: a 2px rule along the
+   clip's bottom edge, at the same x-range and the same width on every member.
+   Two members on adjacent lanes therefore show two rails that begin and end
+   together, which is the POSITION channel PLAN §7.6 ranks above hue — and it is
+   the channel that survives when the name, the strip and the icon have all gone.
+
+   bottom: 2px clears BOTH marks the selected state already spends: the border
+   that thickens to 2px and the 1.5px outline at outline-offset -1.5px. A
+   selected linked clip therefore reads as an outline AND a rail, two separate
+   marks, rather than as one thick bottom edge.
+
+   left/right: 0 resolve against the padding box, so the rail narrows with the
+   clip and disappears with it. There is no width arithmetic and nothing to
+   clamp: at CLIP_MIN_RENDER_WIDTH the inner box is empty and the rail is not
+   painted, which is the same width at which every other signal except texture
+   has already gone.
+
+   --border-structural is the intuitive token and it FAILS, measured: on
+   --surface-raised-hover — which is where hover, focus AND selected put the clip
+   — it lands at 2.64 / 2.74 / 2.94:1, below the 3:1 non-text floor in all three
+   themes, on exactly the clips being looked at. --text-muted clears it on every
+   surface in every theme (4.56 / 4.40 / 4.46:1 hovered). */
+.tl-clip[data-linked='true']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 2px;
+  background-color: var(--text-muted);
+  transition: background-color var(--dur-feedback) var(--ease-out);
+}
+
+/* --text-muted is forbidden on any -hover surface (PLAN §7.1), and all three of
+   these put the clip on --surface-raised-hover. The identical lift
+   .tl-clip-icons takes below, for the identical measured reason — and a rail
+   that stayed muted while the icons beside it brightened would read as two
+   different states rather than one. */
+.tl-clip:hover[data-linked='true']::after,
+.tl-clip:focus-visible[data-linked='true']::after,
+.tl-clip[data-selected='true'][data-linked='true']::after {
+  background-color: var(--text-ink);
+}
+
 /* A clip narrower than CLIP_MIN_HIT_WIDTH keeps its true paint width and widens
    only its pointer target, so a two-frame clip is still selectable. The overhang
    is (CLIP_MIN_HIT_WIDTH - CLIP_MIN_RENDER_WIDTH) / 2 = 2px per side. It is the

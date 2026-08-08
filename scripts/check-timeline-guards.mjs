@@ -126,11 +126,15 @@ const refusals = [
   ],
   ['insertMediaAt NaN', () => state.insertMediaAt(MEDIA, NaN)],
   ['moveClip start NaN', () => state.moveClip(clipId, { trackId, start: NaN })],
-  ['moveClips delta NaN', () => state.moveClips([clipId], NaN, 0)],
-  ['moveClips trackIndex NaN', () => state.moveClips([clipId], 10, NaN)],
+  // A real trackId, not a missing argument: planMove fails closed on an
+  // unresolved primary track (docs/LINKING.md §5.2b), and this file is untyped
+  // .mjs, so leaving the argument off would turn three NaN-refusal assertions
+  // into three `no-track` refusals that pass while testing nothing.
+  ['moveClips delta NaN', () => state.moveClips([clipId], NaN, 0, trackId)],
+  ['moveClips trackIndex NaN', () => state.moveClips([clipId], 10, NaN, trackId)],
   ['trimClip out NaN', () => state.trimClip(clipId, 'out', NaN)],
   ['trimClip in NaN', () => state.trimClip(clipId, 'in', NaN)],
-  ['planMove dry run NaN', () => mod.planMove(state, [clipId], NaN, 0)],
+  ['planMove dry run NaN', () => mod.planMove(state, [clipId], NaN, 0, trackId)],
   ['planTrim dry run NaN', () => mod.planTrim(state, clipId, 'out', NaN)],
 ];
 

@@ -21,8 +21,10 @@ sign in to. The chrome stays dark and quiet so the frame is the only lit thing o
   reference media by id, so nothing goes offline. A clip's own label on the timeline is a separate,
   display-only name and is left alone, so one gesture only ever does one thing.
 - Detach a clip's audio onto its own track — `Shift+D`, or the clip's context menu. The picture
-  keeps its place and goes silent, the sound lands beside it and can be trimmed, moved or deleted
-  on its own.
+  keeps its place and goes silent, the sound lands beside it, and the two stay **linked**: selecting
+  either selects both, and every move, trim, split and delete applies to the pair in one undo step.
+  Link any two or more clips with `Ctrl+L`, break a group with `Ctrl+Shift+L`. A linked clip carries
+  a rule along its bottom edge.
 - Export to H.264, H.265 or ProRes at a chosen size, rate and quality, over the whole timeline or
   the in–out range. Or export the mix alone as AAC, MP3 or WAV, through the same verified audio
   chain — the resolution and frame rate rows leave the form rather than greying out. One ffmpeg
@@ -127,6 +129,8 @@ buttons keep their own keys.
 | `Shift+Delete` | Ripple delete selection |
 | `M` | Add marker at playhead |
 | `Shift+D` | Detach audio |
+| `Ctrl+L` | Link selected clips |
+| `Ctrl+Shift+L` | Unlink selected clips |
 | `+` or `=` | Zoom in |
 | `-` | Zoom out |
 | `Shift+Z` | Zoom to fit |
@@ -260,9 +264,13 @@ These are design decisions and honest gaps, not bugs.
   never stutters the encode. It never writes to your `.veproj`; only `Ctrl+S` does that. After a
   crash the next launch offers the work back in the title bar, but only the **newest** snapshot:
   there is no list to browse and no history to roll back through. A clean exit or a save retires it.
-- **Detached audio is not linked to its picture.** Once detached, the two clips are fully
-  independent: moving, trimming or deleting one does nothing to the other, and there is no
-  re-attach. Select both if you want them to move together.
+- **Linked clips move as one, and there is no drag modifier to slip one out.** Detaching audio
+  links the picture and the sound, so selecting either selects both and every move, trim, split
+  and delete applies to the pair in one undo step. To move one half on its own, unlink it
+  (`Ctrl+Shift+L`), move it, and link it back (`Ctrl+L`) if you want to. Holding a modifier
+  during the drag deliberately does not do this: `Alt` already suppresses snapping, and a chord
+  that silently breaks sync is the thing linking exists to prevent. There is no re-attach either —
+  linking two clips makes them move together, it does not merge them back into one.
 - **Audio-only exports always produce a stereo 48 kHz file.** That is where the mix is built, and
   there are no sample-rate or channel-count controls. Quality picks the bitrate — or, for WAV, 16-
   against 24-bit.
@@ -292,6 +300,7 @@ scripts/           contract checker, icon, ffmpeg staging, keymap generation, me
 docs/              PLAN.md (implementation), EXPORT.md (the ffmpeg contract),
                    AUDIO-MONITOR.md (how preview audio works),
                    AUDIO-FEATURES.md (detach audio, audio-only export),
+                   LINKING.md (group and ungroup),
                    RENAME.md (renaming a source file on disk),
                    SAFETY.md (the close prompt and autosave),
                    ICON.md (the two marks and the .ico ladders)

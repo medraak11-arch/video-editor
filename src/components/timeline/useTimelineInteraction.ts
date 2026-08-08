@@ -47,6 +47,7 @@ import {
   planTrim,
   selectLaneHeight,
   selectLaneTop,
+  selectLinkedClosure,
   selectSnapTargets,
   selectTimelineDurationFrames,
   selectTrackAtY,
@@ -112,8 +113,15 @@ function refusalLabel(s: StoreState, reason: MoveFailure, blockingClipId: ClipId
       const name = blockingClipId ? s.clips[blockingClipId]?.name : undefined;
       return name ? `Blocked by ${name}` : 'Blocked by the next clip';
     }
-    case 'locked':
-      return 'Track is locked';
+    // A trim can be refused `locked` because a MEMBER of the group is on a locked
+    // track while the clip under the pointer is not, and a bare 'Track is locked'
+    // would name a track the user is not touching (docs/LINKING.md §5.3). The
+    // planner returns a null `blockingClipId` for the named clip's own track and
+    // the member's id for anyone else's, so the two cases are distinguishable here.
+    case 'locked': {
+      const name = blockingClipId ? s.clips[blockingClipId]?.name : undefined;
+      return name ? `${name} is on a locked track` : 'Track is locked';
+    }
     case 'out-of-range':
       return 'Start of timeline';
     case 'no-track':
@@ -173,7 +181,17 @@ interface TrimGesture extends Common {
   kind: 'trim';
   id: ClipId;
   edge: 'in' | 'out';
+  /** The primary. Kept for the badge's lane and for `id`; it is also in `members`. */
   el: HTMLElement;
+  /**
+   * Every member with a rendered element, primary included, PAIRED — not two
+   * parallel arrays (docs/LINKING.md §5.3). A member scrolled out of the lane has
+   * no element, and `MoveGesture.els`'s trick of dropping it silently works there
+   * only because a move writes the same transform to every element. A trim writes
+   * a DIFFERENT geometry per member, so a dropped element that shifted the
+   * indices would paint one member with another member's edge.
+   */
+  members: { id: ClipId; el: HTMLElement }[];
   startX: number;
   originFrame: Frames;
   targets: Frames[];
@@ -354,17 +372,17 @@ export function useTimelineInteraction(
       let track = deltaTrack;
       let guide = snapped.target;
 
-      const first = planMove(s, g.ids, delta, track);
+      const first = planMove(s, g.ids, delta, track, g.primaryTrackId);
       if (!first.ok) {
         reason = reason ?? first.reason;
         blocking = first.blockingClipId;
         // Fall back to the origin lane, then to the last legal frame on it.
-        const onOrigin = track !== 0 ? planMove(s, g.ids, delta, 0) : first;
+        const onOrigin = track !== 0 ? planMove(s, g.ids, delta, 0, g.primaryTrackId) : first;
         if (onOrigin.ok) {
           track = 0;
         } else {
-          track = planMove(s, g.ids, 0, track).ok ? track : 0;
-          delta = largestLegalDelta(s, g.ids, delta, track);
+          track = planMove(s, g.ids, 0, track, g.primaryTrackId).ok ? track : 0;
+          delta = largestLegalDelta(s, g.ids, delta, track, g.primaryTrackId);
           guide = null;
         }
       }
@@ -382,7 +400,11 @@ export function useTimelineInteraction(
         const id = el.dataset.clipId as ClipId | undefined;
         const clip = id ? s.clips[id] : undefined;
         let dy = 0;
-        if (clip) {
+        // Kind-scoped, exactly as planMove is (docs/LINKING.md §5.2b): the lane
+        // offset belongs to the lane the pointer is over, so a linked audio member
+        // stays on its own lane while the picture changes video lane. A ghost that
+        // slid it anyway would promise a move the commit does not make.
+        if (clip && track !== 0 && s.tracks[clip.trackId]?.kind === primaryTrack?.kind) {
           const targetId = trackAtKindOffset(s, clip.trackId, track);
           if (targetId) dy = selectLaneTop(s, targetId) - selectLaneTop(s, clip.trackId);
         }
@@ -442,12 +464,32 @@ export function useTimelineInteraction(
       const end = g.edge === 'in' ? clipEnd(clip) : frame;
       const duration = Math.max(1, end - start);
 
-      if (guide !== null && !reducedRef.current) g.el.dataset.snapping = 'true';
-      else delete g.el.dataset.snapping;
-      g.el.style.left = `${framesToPx(start, s.zoom)}px`;
-      g.el.style.width = `${Math.max(CLIP_MIN_RENDER_WIDTH, framesToPx(duration, s.zoom))}px`;
-      if (reason) g.el.dataset.refused = 'true';
-      else delete g.el.dataset.refused;
+      // The members' ghosts are derived from the same `delta` the planner uses,
+      // not from a plan (docs/LINKING.md §5.3): `applyTrim` never reads
+      // `plan.clips`, and on the refusal path — the common one, since every trim
+      // drag ends by pushing past something — there is no plan at all. `frame` is
+      // already resolved here, legal or clamped, and the clamp is group-legal for
+      // free because `largestLegalTrim` binary-searches the group-aware planTrim.
+      const delta = g.edge === 'in' ? frame - clip.start : frame - clipEnd(clip);
+      for (const member of g.members) {
+        const m = s.clips[member.id];
+        if (!m) continue;
+        const memberStart = g.edge === 'in' ? m.start + delta : m.start;
+        const memberDuration = Math.max(
+          1,
+          g.edge === 'in' ? m.duration - delta : m.duration + delta,
+        );
+        member.el.style.left = `${framesToPx(memberStart, s.zoom)}px`;
+        member.el.style.width = `${Math.max(
+          CLIP_MIN_RENDER_WIDTH,
+          framesToPx(memberDuration, s.zoom),
+        )}px`;
+        // Both go on EVERY member: the refusal is the group's, not the primary's.
+        if (guide !== null && !reducedRef.current) member.el.dataset.snapping = 'true';
+        else delete member.el.dataset.snapping;
+        if (reason) member.el.dataset.refused = 'true';
+        else delete member.el.dataset.refused;
+      }
 
       const badge = refs.trimBadge.current;
       if (badge) {
@@ -623,16 +665,20 @@ export function useTimelineInteraction(
         }
       } else if (g.kind === 'trim') {
         const s = readStore();
-        const clip = s.clips[g.id];
-        if (clip) {
-          g.el.style.left = `${framesToPx(clip.start, s.zoom)}px`;
-          g.el.style.width = `${Math.max(
-            CLIP_MIN_RENDER_WIDTH,
-            framesToPx(clip.duration, s.zoom),
-          )}px`;
+        // Every member, not just the primary: a trim writes a different geometry
+        // to each one, so each one has to be put back from the store.
+        for (const member of g.members) {
+          const clip = s.clips[member.id];
+          if (clip) {
+            member.el.style.left = `${framesToPx(clip.start, s.zoom)}px`;
+            member.el.style.width = `${Math.max(
+              CLIP_MIN_RENDER_WIDTH,
+              framesToPx(clip.duration, s.zoom),
+            )}px`;
+          }
+          delete member.el.dataset.snapping;
+          delete member.el.dataset.refused;
         }
-        delete g.el.dataset.snapping;
-        delete g.el.dataset.refused;
         delete g.el.dataset.dragging;
       }
       showSnapGuide(null);
@@ -685,14 +731,14 @@ export function useTimelineInteraction(
 
       const store = readStore();
       if (g.kind === 'move' && g.moved) {
-        const { ids, delta, deltaTrack } = g;
+        const { ids, delta, deltaTrack, primaryTrackId } = g;
         const worthwhile = commit && (delta !== 0 || deltaTrack !== 0);
         flushSync(() => {
           if (!worthwhile) {
             readStore().abortHistory();
             return;
           }
-          const result = readStore().moveClips(ids, delta, deltaTrack);
+          const result = readStore().moveClips(ids, delta, deltaTrack, primaryTrackId);
           if (result.ok) readStore().commitHistory();
           else readStore().abortHistory();
         });
@@ -894,15 +940,33 @@ export function useTimelineInteraction(
         focusClip(id);
         if (!s.selection.has(id)) s.select(id, 'replace');
         anchor.current = id;
+        // The whole group, in closure order, primary included. A member with no
+        // rendered element is SKIPPED, never a reason to abort the gesture — it is
+        // off screen, the commit still trims it, and the next render paints it
+        // correctly (docs/LINKING.md §5.3).
+        const memberIds = selectLinkedClosure(s, [id]);
+        const members: { id: ClipId; el: HTMLElement }[] = [];
+        for (const memberId of memberIds) {
+          const el =
+            memberId === id
+              ? clipEl
+              : refs.laneContent.current?.querySelector<HTMLElement>(
+                  `[data-clip-id="${memberId}"]`,
+                );
+          if (el) members.push({ id: memberId, el });
+        }
         gesture.current = {
           ...common,
           kind: 'trim',
           id,
           edge,
           el: clipEl,
+          members,
           startX: event.clientX,
           originFrame: edge === 'in' ? clip.start : clipEnd(clip),
-          targets: selectSnapTargets(s, new Set([id])),
+          // The exclusion widens to the whole member set, or a member's own edge
+          // becomes a snap target for the trim that is moving it.
+          targets: selectSnapTargets(s, new Set(memberIds)),
           moved: false,
           frame: edge === 'in' ? clip.start : clipEnd(clip),
         };
@@ -1184,7 +1248,14 @@ export function useTimelineInteraction(
         const magnitude = event.shiftKey ? secondStepFrames(s.fps) : 1;
         const delta = back ? -magnitude : magnitude;
         const ids = [...s.selection];
-        const result = s.moveClips(ids, delta, 0);
+        // There is no gesture here, so there is no lane the pointer is over.
+        // deltaTrackIndex is 0, and kind-scoping only ever decides WHICH lane list
+        // an index offset is applied to — at offset 0 every member resolves to its
+        // own track whatever the primary is. So any member's track is correct;
+        // focus is the honest one when it resolves, and the first moving id is the
+        // fallback (docs/LINKING.md §5.2b).
+        const primaryTrackId = s.clips[focusedClipId ?? '']?.trackId ?? s.clips[ids[0]]?.trackId;
+        const result = s.moveClips(ids, delta, 0, primaryTrackId);
         if (!result.ok) {
           s.setNotice({
             tone: 'danger',
@@ -1415,14 +1486,15 @@ function largestLegalDelta(
   ids: readonly ClipId[],
   target: number,
   deltaTrack: number,
+  primaryTrackId: TrackId | undefined,
 ): number {
-  if (!planMove(s, ids, 0, deltaTrack).ok) return 0;
+  if (!planMove(s, ids, 0, deltaTrack, primaryTrackId).ok) return 0;
   let lo = 0;
   let hi = Math.round(target);
   for (let i = 0; i < 20; i += 1) {
     const mid = Math.round((lo + hi) / 2);
     if (mid === lo || mid === hi) break;
-    if (planMove(s, ids, mid, deltaTrack).ok) lo = mid;
+    if (planMove(s, ids, mid, deltaTrack, primaryTrackId).ok) lo = mid;
     else hi = mid;
   }
   return lo;
