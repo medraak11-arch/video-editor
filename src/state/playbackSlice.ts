@@ -13,7 +13,13 @@
 import type { Frames, MediaItem, ProjectFile } from '../types/model';
 import type { SliceCreator, StoreState } from './types';
 import { framesToTimecode } from '../lib/time';
-import { PLAYHEAD_TAIL_FRAMES } from '../lib/constants';
+import type { AspectId, AspectPreset } from '../lib/constants';
+import {
+  ASPECT_EPSILON,
+  ASPECT_PRESETS,
+  PLAYHEAD_TAIL_FRAMES,
+  RESOLUTION_TIERS,
+} from '../lib/constants';
 import { selectTimelineDurationFrames } from './timelineSlice';
 
 export interface PlaybackState {
@@ -28,6 +34,18 @@ export interface PlaybackState {
   fps: number;
   width: number;
   height: number;
+  /** The frame rate has been decided — adopted from a source or set explicitly. */
+  fpsLocked: boolean;
+  /** The project shape has been decided — adopted from a source or set explicitly. */
+  sizeLocked: boolean;
+  /**
+   * INVARIANT: always `fpsLocked && sizeLocked`. Never written independently — every
+   * write to any of the three goes through `locks()` below (FORMAT §7.2).
+   *
+   * Retained rather than renamed because `mediaSlice` reads it as its adoption guard,
+   * where it now means "at least one half is still open", which is exactly when the
+   * call is worth making. Not persisted; `ProjectFile` does not carry it.
+   */
   formatLocked: boolean;
   /** 0..1 */
   volume: number;
@@ -58,10 +76,18 @@ export interface PlaybackActions {
   setInPoint(frame?: Frames): void;
   setOutPoint(frame?: Frames): void;
   clearInOut(): void;
-  /** Always succeeds. Never retimes clips. Clamps clips that no longer fit their source. */
+  /**
+   * Always succeeds. Never retimes clips. Clamps clips that no longer fit their source.
+   * Locks the RATE only — choosing a shape must not forfeit rate adoption (FORMAT §7.1).
+   */
   setProjectFps(fps: number): void;
+  /** Locks the SHAPE only, and rounds both dimensions up to even (FORMAT §7.3). */
   setProjectSize(width: number, height: number): void;
-  /** One-shot auto-adopt from the first ready item. No-op when formatLocked. */
+  /**
+   * Adopts rate and shape INDEPENDENTLY, and only the halves still unlocked. A source
+   * rate of 0 means "unknown" and adopts nothing. Adopting a rate can raise a Notice,
+   * because it can land on a project that already has clips laid out (FORMAT §7.3).
+   */
   adoptSourceFormat(m: Pick<MediaItem, 'fps' | 'width' | 'height'>): void;
   setVolume(v: number): void;
   /**
@@ -100,8 +126,16 @@ const FPS_SNAP_TOLERANCE = 0.05;
 
 const FPS_MIN = 1;
 const FPS_MAX = 240;
-const SIZE_MIN = 2;
-const SIZE_MAX = 16384;
+
+/**
+ * The bounds a project dimension is clamped to. Exported because the resolution
+ * ladder must not generate a size the store would refuse, and because no other file
+ * may restate the numbers — `ProjectProperties.tsx`'s field `min`/`max` (16 / 8192)
+ * are a separate, narrower input affordance and are left exactly as they ship.
+ */
+export const SIZE_MIN = 2;
+export const SIZE_MAX = 16384;
+
 const RATE_MAX = SHUTTLE_RATES[SHUTTLE_RATES.length - 1];
 const RATE_MIN_MAGNITUDE = 0.1;
 
@@ -133,6 +167,161 @@ export function snapKnownFps(fps: number): number {
   return best;
 }
 
+/* ------------------------------------------------- project shape (FORMAT §2)
+   Pure, exported, no store access — the same shape `snapKnownFps` already has.
+   The tables live in src/lib/constants.ts; only the arithmetic is here.       */
+
+export interface ProjectSize {
+  width: number;
+  height: number;
+}
+
+/** Even and at least 2. 4:2:0 and 4:2:2 both require it; odd is an encoder hard failure. */
+export function evenUp(n: number): number {
+  const r = Math.max(2, Math.round(n));
+  return r % 2 === 0 ? r : r + 1;
+}
+
+/** The resolution of `ratio` at short-edge `tier`. Total for every finite input. */
+export function sizeForTier(ratio: number, tier: number): ProjectSize {
+  if (!(ratio > 0) || !(tier > 0)) return { width: 1920, height: 1080 };
+  return ratio >= 1
+    ? { width: evenUp(tier * ratio), height: evenUp(tier) }
+    : { width: evenUp(tier), height: evenUp(tier / ratio) };
+}
+
+/** Which preset this size IS. Never guesses, never throws. */
+export function resolveAspectId(width: number, height: number): AspectId {
+  if (!(width > 0) || !(height > 0)) return 'custom';
+  const ratio = width / height;
+  for (const p of ASPECT_PRESETS) {
+    if (Math.abs(ratio - p.ratio) <= ASPECT_EPSILON) return p.id;
+  }
+  return 'custom';
+}
+
+/** The short edge — the tier this size sits on. Deliberately NOT snapped; see FORMAT §3.5. */
+export const sizeTier = (width: number, height: number): number => Math.min(width, height);
+
+/** The preset this size IS, as the object. `undefined` means 'custom'. Module-private. */
+function presetFor(width: number, height: number): AspectPreset | undefined {
+  const id = resolveAspectId(width, height);
+  return ASPECT_PRESETS.find((p) => p.id === id);
+}
+
+/**
+ * '4K UHD · 3840 × 2160', or '1920 × 1084' when there is no name to give.
+ *
+ * A tier name is attached ONLY when the size IS the canonical size for that tier at
+ * that preset's EXACT ratio. Being merely inside ASPECT_EPSILON is not enough:
+ * 1920 × 1084 is inside the 16:9 epsilon and is not 1080p, and calling it 1080p is
+ * precisely the see-one-thing-ship-another failure this whole area exists to prevent.
+ * A near-preset size renders as its pixel pair alone, which is the whole truth about it.
+ */
+export function resolutionLabel(width: number, height: number): string {
+  const pixels = `${width} × ${height}`;
+  const preset = presetFor(width, height);
+  if (!preset) return pixels;
+  const tier = sizeTier(width, height);
+  const canon = sizeForTier(preset.ratio, tier);
+  if (canon.width !== width || canon.height !== height) return pixels;
+  const name = preset.tierNames[tier];
+  return name ? `${name} · ${pixels}` : pixels;
+}
+
+export interface ResolutionOption {
+  /** `${width}x${height}` — the Select value, unchanged from the shipping dialog's encoding. */
+  value: string;
+  label: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * The Select `value` for a project size. ALWAYS even, therefore always present in
+ * `resolutionLadder(width, height)`, whose passthrough row is evened for the same reason.
+ *
+ * This is the ONE normaliser. The inspector's Resolution row, the export dialog's
+ * Resolution row and the ladder's own passthrough row all derive their string here, so no
+ * <select> in the app can ever hold a value absent from its options — a native select with
+ * an unmatched value silently displays its FIRST option, which would make the control
+ * report a size the settings do not hold.
+ */
+export const projectResolutionValue = (width: number, height: number): string =>
+  `${evenUp(width)}x${evenUp(height)}`;
+
+/**
+ * The resolution ladder for a shape. EVERY entry carries the aspect of the size passed
+ * in, so nothing in this list can change the shape of the output (FORMAT §6.3).
+ *
+ * Generated from the MATCHED PRESET'S EXACT RATIO, never from the live `width / height`.
+ * That is the difference between a stable ladder and one that ratchets: `sizeForTier`
+ * rounds up to even, so 854 × 480 is a ratio of 1.779167 rather than 1.777778, and
+ * generating from the live ratio would make tier 2160 emit 3844 × 2160 — still inside
+ * ASPECT_EPSILON, therefore still labelled `4K UHD`, with real 3840 × 2160 no longer
+ * reachable from that project at all. Resolving the preset first makes a preset project
+ * regenerate its own canonical ladder from any of its tiers, so the ladder is idempotent.
+ * A 'custom' shape has no canonical ratio and keeps the live one.
+ *
+ * Tiers exceeding SIZE_MAX on either axis are skipped: the store would clamp them, and
+ * offering `2160 × 1105920` in a menu whose premise is that every row is shippable would
+ * hand ffmpeg a 2.4-gigapixel frame. The passthrough row is never skipped, so the
+ * project's own size is always reachable.
+ */
+export function resolutionLadder(width: number, height: number): ResolutionOption[] {
+  const option = (w: number, h: number): ResolutionOption => ({
+    value: `${w}x${h}`,
+    label: resolutionLabel(w, h),
+    width: w,
+    height: h,
+  });
+  if (!(width > 0) || !(height > 0)) return [option(1920, 1080)];
+
+  const preset = presetFor(width, height);
+  const ratio = preset ? preset.ratio : width / height;
+  const tiers: ResolutionOption[] = [];
+  const seen = new Set<string>();
+  for (const tier of RESOLUTION_TIERS) {
+    const size = sizeForTier(ratio, tier);
+    if (size.width > SIZE_MAX || size.height > SIZE_MAX) continue;
+    const value = `${size.width}x${size.height}`;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    tiers.push(option(size.width, size.height));
+  }
+  // The passthrough row, EVENED — and the membership test uses the evened string too. A
+  // saved 1920 × 1081 project must not lead its own export ladder with an odd height that
+  // dies in libx264 minutes into a render. The store keeps 1081; the ladder offers 1082;
+  // `projectResolutionValue` selects it; the Height field still reads 1081 until the user
+  // touches a control.
+  const own = projectResolutionValue(width, height);
+  return seen.has(own) ? tiers : [option(evenUp(width), evenUp(height)), ...tiers];
+}
+
+/**
+ * Where the aspect control moves the project. The TIER is preserved: the short edge is
+ * the pixel budget the user already chose, and swapping shape must never silently
+ * change it. 'custom' is not a target and returns the size unchanged (FORMAT §3.5).
+ */
+export function sizeForAspect(width: number, height: number, next: AspectId): ProjectSize {
+  const preset = ASPECT_PRESETS.find((p) => p.id === next);
+  if (!preset) return { width, height };
+  return sizeForTier(preset.ratio, sizeTier(width, height));
+}
+
+/**
+ * The ONLY way any of the three lock fields is written, so the invariant
+ * `formatLocked === fpsLocked && sizeLocked` cannot rot (FORMAT §7.2).
+ */
+const locks = (
+  fpsLocked: boolean,
+  sizeLocked: boolean,
+): Pick<PlaybackState, 'fpsLocked' | 'sizeLocked' | 'formatLocked'> => ({
+  fpsLocked,
+  sizeLocked,
+  formatLocked: fpsLocked && sizeLocked,
+});
+
 export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({
   playhead: 0,
   isPlaying: false,
@@ -142,6 +331,8 @@ export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({
   fps: 30,
   width: 1920,
   height: 1080,
+  fpsLocked: false,
+  sizeLocked: false,
   formatLocked: false,
   volume: 1,
   muted: false,
@@ -258,13 +449,15 @@ export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({
     const next = clamp(fps, FPS_MIN, FPS_MAX);
     const s = get();
     if (next === s.fps) {
-      if (!s.formatLocked) set({ formatLocked: true });
+      if (!s.fpsLocked) set(locks(true, s.sizeLocked));
       return;
     }
 
     // Frame numbers are literal: clips keep start / duration / mediaIn. Only the media's
     // durationFrames moves, and clampClipsToSource resolves the resulting over-run.
-    set({ fps: next, formatLocked: true });
+    // The RATE is locked; the shape is left open, so choosing one does not forfeit the
+    // other's adoption (FORMAT §7.1).
+    set({ fps: next, ...locks(true, s.sizeLocked) });
     get().recomputeMediaDurations(next);
     const trimmed = get().clampClipsToSource();
     get().seek(get().playhead); // the tail clamp may have moved under the playhead
@@ -284,29 +477,70 @@ export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({
 
   setProjectSize: (width, height) => {
     if (!Number.isFinite(width) || !Number.isFinite(height)) return;
-    const w = Math.round(clamp(width, SIZE_MIN, SIZE_MAX));
-    const h = Math.round(clamp(height, SIZE_MIN, SIZE_MAX));
+    // EVEN, not just rounded. 4:2:0 and 4:2:2 require it, the export ladder is even by
+    // construction, and an odd project height reaching libx264 is a hard encoder failure
+    // the user would meet minutes into a render with no idea why. Typing 1081 into the
+    // Height field gives 1082, visibly, at commit.
+    const w = evenUp(clamp(width, SIZE_MIN, SIZE_MAX));
+    const h = evenUp(clamp(height, SIZE_MIN, SIZE_MAX));
     const s = get();
-    if (w === s.width && h === s.height && s.formatLocked) return;
-    set({ width: w, height: h, formatLocked: true });
+    // The two effects are SEPARATE. Choosing the Aspect a fresh project already has is a
+    // no-op on the document but still a decision about the shape, so it locks and stops.
+    // Falling through would light the unsaved-changes dot and arm the close guard for an
+    // operation that changed nothing — PLAN §3.1's rule that nothing may make the project
+    // look more unsaved than it was applies to a no-op too. Mirrors setProjectFps above.
+    if (w === s.width && h === s.height) {
+      if (!s.sizeLocked) set(locks(s.fpsLocked, true));
+      return;
+    }
+    // No clip is touched, no history transaction is opened, no notice is raised: a clip at
+    // default properties is already correct in every shape, because both engines fit by
+    // containment at render time, and the preview well changes shape in the same frame
+    // (FORMAT §3.6).
+    set({ width: w, height: h, ...locks(s.fpsLocked, true) });
     get().markDirty();
   },
 
   adoptSourceFormat: (m) => {
-    if (get().formatLocked) return;
-    // An audio-only first import carries fps 0 and no dimensions. Adopting that would
-    // set the project to 0 fps, so it is not an adoption and must not lock the format.
-    if (!(m.fps > 0 && m.width > 0 && m.height > 0)) return;
+    const s = get();
+    // Each half independently, and only the halves still open. `m.fps <= 0` means "rate
+    // unknown", not "rate zero": a caller that cannot measure a frame rate passes 0 and
+    // adopts only the size. An audio-only item adopts neither half and locks neither.
+    const takeFps = !s.fpsLocked && m.fps > 0;
+    const takeSize = !s.sizeLocked && m.width > 0 && m.height > 0;
+    if (!takeFps && !takeSize) return;
 
-    const fps = snapKnownFps(clamp(m.fps, FPS_MIN, FPS_MAX));
+    const fps = takeFps ? snapKnownFps(clamp(m.fps, FPS_MIN, FPS_MAX)) : s.fps;
     set({
-      fps,
-      width: Math.round(clamp(m.width, SIZE_MIN, SIZE_MAX)),
-      height: Math.round(clamp(m.height, SIZE_MIN, SIZE_MAX)),
-      formatLocked: true,
+      ...(takeFps ? { fps } : null),
+      ...(takeSize
+        ? {
+            width: evenUp(clamp(m.width, SIZE_MIN, SIZE_MAX)),
+            height: evenUp(clamp(m.height, SIZE_MIN, SIZE_MAX)),
+          }
+        : null),
+      ...locks(s.fpsLocked || takeFps, s.sizeLocked || takeSize),
     });
-    get().recomputeMediaDurations(fps);
-    get().clampClipsToSource();
+
+    // Duration recompute is a consequence of the RATE only; skip it when only size moved.
+    if (takeFps) {
+      get().recomputeMediaDurations(fps);
+      const trimmed = get().clampClipsToSource();
+      get().seek(get().playhead); // the tail clamp may have moved under the playhead
+      if (trimmed > 0) {
+        // Owed here, where the shipped action owed nothing: with the locks split, a rate
+        // adoption can land on a project that already has clips laid out, and a truncated
+        // clip on a track below the fold is exactly silent (FORMAT §7.3).
+        get().setNotice({
+          tone: 'warning',
+          title: 'Frame rate changed',
+          message:
+            trimmed === 1
+              ? '1 clip was shortened to fit its source'
+              : `${trimmed} clips were shortened to fit their source`,
+        });
+      }
+    }
     get().markDirty();
   },
 
@@ -334,7 +568,9 @@ export const createPlaybackSlice: SliceCreator<PlaybackSlice> = (set, get) => ({
       rate: 1,
       inPoint: null,
       outPoint: null,
-      formatLocked: true,
+      // Opening a project decides both halves. A saved project's format is explicit by
+      // definition and must never be re-adopted by a re-probe on open.
+      ...locks(true, true),
     }),
 });
 

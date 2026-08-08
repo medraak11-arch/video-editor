@@ -100,6 +100,25 @@
   --texture-tint:          oklch(0 0 0 / 0.09);
 }
 
+/* ====================================================== 7.1a Frame matte ===
+   THEME-INVARIANT ON PURPOSE, and declared ONCE rather than three times.
+
+   This is the colour ffmpeg's `color=c=black` base canvas writes into the
+   delivered file (EXPORT §1.2), so it is CONTENT, not a plane: exempt from the
+   four-plane ramp for the same reason a black frame of footage is, and a theme
+   has no more business changing it than it has changing the footage. The
+   contract checker treats a token declared in only one block as theme-invariant
+   by intent — its rule is "a token that appears in MORE THAN ONE theme block
+   must appear in ALL of them" — so one declaration passes theme parity and is
+   the smaller, truer edit than three identical copies.
+
+   Consumed by .ve-video-stage and nothing else. Do not add it to the plane ramp
+   and do not derive anything from it.                                        */
+
+:root {
+  --frame-matte:           oklch(0 0 0);
+}
+
 /* ===================================================== theme-invariant ===
    Textures are GEOMETRY, not colour: identical in all three themes, drawing
    their single colour from --texture-tint above. They differ in angle AND

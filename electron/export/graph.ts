@@ -258,6 +258,9 @@ interface Contributor {
   /** Target box: where ClipProperties.scale is honoured. */
   tw: number;
   th: number;
+  /** Overlay offset, converted from PROJECT-resolution px onto the OUTPUT grid. */
+  px: number;
+  py: number;
 }
 
 export function buildExportGraph(
@@ -292,6 +295,15 @@ export function buildExportGraph(
   const framesTotal = audioOnly ? 0 : Math.max(1, Math.round(durationSeconds * OF));
 
   const toOut = (projectFrame: number): number => Math.round((projectFrame / F) * OF);
+
+  // Placement is in PROJECT-resolution px (model.ts, ClipProperties.positionX), but the
+  // overlay runs on the OUTPUT grid. When the two differ the offset must be rescaled, or
+  // a clip the user reframed in the preview lands somewhere else in the file. Both
+  // ratios are computed rather than one shared factor: the dialog locks the export
+  // aspect to the project aspect (FORMAT §6.3), but force_divisible_by rounding can
+  // still leave them a fraction of a percent apart, and two exact ratios are free.
+  const rx = doc.width > 0 ? req.width / doc.width : 1;
+  const ry = doc.height > 0 ? req.height / doc.height : 1;
 
   const sourceById = new Map<string, ExportSource>();
   for (const s of doc.sources) sourceById.set(s.mediaId, s);
@@ -366,8 +378,13 @@ export function buildExportGraph(
         startMs: Math.round((nStart / OF) * 1000),
         enableFrom: (nStart - 0.5) / OF, // frame CENTRES, not edges — §1.6
         enableTo: (nEnd - 0.5) / OF,
+        // tw/th need no ratio: they are already computed from req.width/req.height,
+        // so they are already in output space, and the containment fit is
+        // scale-invariant. Only the additive offset was wrong.
         tw: Math.max(2, Math.round(req.width * props.scale)),
         th: Math.max(2, Math.round(req.height * props.scale)),
+        px: props.positionX * rx,
+        py: props.positionY * ry,
       });
     }
   }
@@ -437,11 +454,10 @@ export function buildExportGraph(
     // §1.6 — track order is overlay order; each clip consumes the previous composite.
     let composite = 'vbase';
     videoContributors.forEach((c, i) => {
-      const p = c.clip.properties;
       const next = `vc${i}`;
       lines.push(
         `[${composite}][v${c.input}]overlay=` +
-          `x=(W-w)/2${offset(p.positionX)}:y=(H-h)/2${offset(p.positionY)}:` +
+          `x=(W-w)/2${offset(c.px)}:y=(H-h)/2${offset(c.py)}:` +
           `eof_action=pass:shortest=0:repeatlast=0:format=${shape.overlayFmt}:` +
           `enable='gte(t,${sec(c.enableFrom)})*lt(t,${sec(c.enableTo)})'[${next}]`,
       );

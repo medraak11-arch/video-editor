@@ -41,7 +41,29 @@
   position: relative;
   flex: 0 0 auto;
   overflow: hidden;
-  background: var(--surface-well);
+  /* The matte is the colour the EXPORT writes: ffmpeg's base canvas is
+     `color=c=black` (EXPORT §1.2), so bars in the delivered file are black. The
+     well's three per-theme values were three different bar colours, none of them
+     the shipped one — invisible in a 16:9 project with 16:9 footage, and more
+     than half the frame in a vertical project with landscape sources.
+
+     No fallback, and there must not be one. `npm run check`'s rule 2 captures
+     only the FIRST token in a `var()` expression, so
+     `var(--frame-matte, var(--surface-well))` fails `undefined-token` exactly as
+     loudly as the bare form while looking safe — the fallback is never examined. */
+  background: var(--frame-matte);
+  /* OUTLINE, never border: a border is inset into the content box and would
+     shift stageWidth, which scaleToStage and every clip position depend on. An
+     outline is drawn outside the box and changes no geometry. Not a shadow — the
+     stage is in-flow (DESIGN §4, The No-Shadow-In-Flow Rule). Not the accent —
+     the accent budget is closed at six uses (PLAN §7.4) and a frame boundary is
+     structure, not state. --border-structural is the token PLAN §7.5 established
+     for exactly this 3:1 non-text floor, and without it the boundary of the frame
+     the user is about to ship is 1:1 against its surround. Always drawn,
+     including over an empty timeline: the shape you are editing is information
+     whether or not there is a frame in it. */
+  outline: 1px solid var(--border-structural);
+  outline-offset: 0;
 }
 
 .ve-video-el,

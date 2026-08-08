@@ -29,7 +29,12 @@ import { Ban, Check } from 'lucide-react';
 import { Button, Dialog, InlineNotice, Select, TextField } from '../ui';
 import { PropertyRow } from '../inspector/PropertyRow';
 import { readStore, useEditorStore } from '../../state/store';
-import { KNOWN_FPS } from '../../state/playbackSlice';
+import {
+  KNOWN_FPS,
+  evenUp,
+  projectResolutionValue,
+  resolutionLadder,
+} from '../../state/playbackSlice';
 import { getEditorAPI } from '../../lib/editorApi';
 import { CONTAINER } from '../../lib/constants';
 import { framesToDuration, framesToSeconds } from '../../lib/time';
@@ -74,12 +79,13 @@ const PHASE_LABEL: Record<ExportProgressEvent['phase'], string> = {
   error: 'Export failed',
 };
 
-const PRESET_SIZES: ReadonlyArray<[number, number]> = [
-  [3840, 2160],
-  [1920, 1080],
-  [1280, 720],
-  [854, 480],
-];
+/* PRESET_SIZES is gone. It was a hardcoded landscape list, so in a 1080 × 1920
+   project the Resolution select offered four landscape options and picking one
+   shipped a landscape file from a vertical edit — the preview letterboxing to
+   9:16 while the encoder wrote 16:9. The export chooses a TIER, never a SHAPE:
+   every entry now comes from `resolutionLadder(projectWidth, projectHeight)` and
+   therefore carries the project's aspect (FORMAT §6.3). Changing the shape is
+   done in the inspector, where the preview follows. */
 
 /** Windows and macOS both reject these; strip rather than fail on write. */
 const sanitiseFilename = (name: string): string =>
@@ -95,6 +101,8 @@ export function ExportDialog(): ReactElement {
   const open = useEditorStore((s) => s.exportDialogOpen);
   const setExportDialogOpen = useEditorStore((s) => s.setExportDialogOpen);
   const projectFps = useEditorStore((s) => s.fps);
+  const projectWidth = useEditorStore((s) => s.width);
+  const projectHeight = useEditorStore((s) => s.height);
   const inPoint = useEditorStore((s) => s.inPoint);
   const outPoint = useEditorStore((s) => s.outPoint);
   const clipsById = useEditorStore((s) => s.clips);
@@ -134,8 +142,12 @@ export function ExportDialog(): ReactElement {
     setSettings({
       filename: sanitiseFilename(s.projectName),
       folder: rememberedFolder.current,
-      width: s.width,
-      height: s.height,
+      // EVEN. A project saved with an odd height would otherwise be exported odd —
+      // electron/ipc/export.ts validates isPositiveInt and nothing else, and libx264
+      // dies on it minutes into the render. The store keeps 1081; the export request
+      // carries 1082; loading still rewrites nothing.
+      width: evenUp(s.width),
+      height: evenUp(s.height),
       fps: s.fps,
       codec: 'h264',
       quality: 'good',
@@ -185,17 +197,39 @@ export function ExportDialog(): ReactElement {
   const hasInOut = inPoint !== null || outPoint !== null;
   const audioOnly = isAudioOnlyCodec(settings.codec);
 
-  const sizeOptions = useMemo(() => {
-    const seen = new Set<string>();
-    const out: Array<{ value: string; label: string }> = [];
-    for (const [w, h] of [[settings.width, settings.height] as [number, number], ...PRESET_SIZES]) {
-      const value = `${w}x${h}`;
-      if (seen.has(value)) continue;
-      seen.add(value);
-      out.push({ value, label: `${w} × ${h}` });
-    }
-    return out;
-  }, [settings.width, settings.height]);
+  // Keyed on the PROJECT size, never on settings.width/height: the list must not
+  // change shape when the user picks from it, and the project size is always in
+  // the ladder (either as a tier or as its evened passthrough row).
+  const sizeOptions = useMemo(
+    () => resolutionLadder(projectWidth, projectHeight),
+    [projectWidth, projectHeight],
+  );
+
+  /* The project size can move WHILE the dialog is open. The reachable path is not
+     the inspector — it is inert behind the modal <dialog> — but `adoptSourceFormat`:
+     a probe from an import begun before the dialog opened lands inside its lifetime
+     (mediaSlice pools 3, so a multi-file import spans seconds), and hydrateMedia's
+     re-probe-on-open does the same. The `open` effect runs on [open] only, so
+     without this the select's value has no matching option, a native select then
+     displays its FIRST option, and the dialog would read "4K vertical · 2160 × 3840"
+     while settings still said 1920 × 1080 — the UI lying and Export writing a
+     landscape file from a vertical project.
+
+     It converges in one pass and cannot loop: `evenUp` is idempotent, so
+     projectResolutionValue(evenUp(projectWidth), evenUp(projectHeight)) equals
+     projectResolutionValue(projectWidth, projectHeight), which the ladder always
+     contains — either as a tier or as its evened passthrough row. The second run
+     takes the guard and returns. */
+  useEffect(() => {
+    if (!open) return;
+    const v = projectResolutionValue(settings.width, settings.height);
+    if (sizeOptions.some((o) => o.value === v)) return;
+    setSettings((prev) => ({
+      ...prev,
+      width: evenUp(projectWidth),
+      height: evenUp(projectHeight),
+    }));
+  }, [open, sizeOptions, settings.width, settings.height, projectWidth, projectHeight]);
 
   const fpsOptions = useMemo(() => {
     const values = new Set<number>([projectFps, ...KNOWN_FPS]);
@@ -487,7 +521,8 @@ export function ExportDialog(): ReactElement {
                   id="ve-export-resolution"
                   label="Resolution"
                   numeric
-                  value={`${settings.width}x${settings.height}`}
+                  /* Even by construction, so it always names a real option. */
+                  value={projectResolutionValue(settings.width, settings.height)}
                   options={sizeOptions}
                   onChange={onResolution}
                 />

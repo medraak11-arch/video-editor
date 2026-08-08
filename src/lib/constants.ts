@@ -86,6 +86,83 @@ export const DND_CLIP_MIME = 'application/x-editor-clip';
 
 export const LS_UI_KEY = 've.ui.v1';
 
+/* ------------------------------------------------- project shape (FORMAT §2)
+   Tables only. The pure functions that read them live in
+   src/state/playbackSlice.ts, following the precedent KNOWN_FPS / snapKnownFps
+   already set there. Nothing here is a colour, a size the store would refuse,
+   or a product name (FORMAT §3.2).                                          */
+
+/** Project shape presets. `'custom'` is a DISPLAY value only — never a target (FORMAT §3.5). */
+export type AspectId = '16:9' | '9:16' | '1:1' | '4:5' | 'custom';
+
+export interface AspectPreset {
+  id: Exclude<AspectId, 'custom'>;
+  /** Sentence case. No product names — see FORMAT §3.2. */
+  label: string;
+  /** width / height, exact. */
+  ratio: number;
+  /** Tier name by SHORT edge. A tier with no entry renders as its pixel pair alone. */
+  tierNames: Readonly<Record<number, string>>;
+}
+
+/** The ONE ladder. Short edges, descending. Every list in the app is generated from it. */
+export const RESOLUTION_TIERS: readonly number[] = [2160, 1440, 1080, 720, 480];
+
+export const ASPECT_PRESETS: readonly AspectPreset[] = [
+  {
+    id: '16:9',
+    label: 'Landscape 16:9',
+    ratio: 16 / 9,
+    tierNames: { 2160: '4K UHD', 1440: '2K QHD', 1080: '1080p', 720: '720p', 480: '480p' },
+  },
+  {
+    id: '9:16',
+    label: 'Vertical 9:16',
+    ratio: 9 / 16,
+    tierNames: {
+      2160: '4K vertical',
+      1440: '2K vertical',
+      1080: '1080 vertical',
+      720: '720 vertical',
+      480: '480 vertical',
+    },
+  },
+  {
+    id: '1:1',
+    label: 'Square 1:1',
+    ratio: 1,
+    tierNames: {
+      2160: '4K square',
+      1440: '2K square',
+      1080: '1080 square',
+      720: '720 square',
+      480: '480 square',
+    },
+  },
+  {
+    id: '4:5',
+    label: 'Portrait 4:5',
+    ratio: 4 / 5,
+    tierNames: {
+      2160: '4K portrait',
+      1440: '2K portrait',
+      1080: '1080 portrait',
+      720: '720 portrait',
+      480: '480 portrait',
+    },
+  },
+];
+
+/** Label for the derived 'custom' value. Never an option the user can select INTO. */
+export const ASPECT_CUSTOM_LABEL = 'Custom';
+
+/**
+ * |a - b| within this counts as the same shape. Chosen against the two nearest real
+ * collisions: 16:9 (1.7778) vs 17:9 (1.8889) is 0.111 away, and 854 × 480 (1.77917)
+ * differs from exact 16:9 by 0.0014. 0.01 separates them by two orders of magnitude.
+ */
+export const ASPECT_EPSILON = 0.01;
+
 /** Output container per codec. The export dialog needs it to show the final filename. */
 export const CONTAINER: Record<ExportSettings['codec'], string> = {
   h264: 'mp4',

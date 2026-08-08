@@ -300,7 +300,9 @@ Read left to right, each filter earns its place:
 **Letterbox and pillarbox are transparent, not black.** There is no `pad` filter: the clip is scaled
 to fit and then centred by `overlay` expression. On V1 the base shows through and the bars read
 black, which is what §1.2 promises. On V2 and above the track beneath shows through, which is what a
-smaller clip over a larger one must do.
+smaller clip over a larger one must do. The fit rule itself — contain, centre, never crop — has one
+owner and it is **`docs/FORMAT.md §4.1`**; this section describes how the graph expresses it, not
+what it is.
 
 `tw`/`th` are the target box, which is where `ClipProperties.scale` is honoured:
 
@@ -308,6 +310,13 @@ smaller clip over a larger one must do.
 const tw = Math.max(2, Math.round(out.width  * c.properties.scale));
 const th = Math.max(2, Math.round(out.height * c.properties.scale));
 ```
+
+`positionX` / `positionY` are in **project-resolution** px (`model.ts`). The overlay runs on the
+output grid, so they are multiplied by `req.width / doc.width` and `req.height / doc.height` before
+being formatted by `offset()`. At `req` = `doc` — every case in §1.8 — both ratios are 1 and the
+emitted bytes are unchanged. `tw`/`th` need no such factor: they are already computed from
+`req.width` / `req.height`, and the containment fit is scale-invariant. Only the additive offset was
+ever in the wrong space (`docs/FORMAT.md §6.2`).
 
 **A clip with `opacity === 0` contributes no video chain and no overlay** — it cannot affect a single
 pixel. It still contributes its `-i` and its audio branch when `contributesAudio` (§1.4). Only a
@@ -636,7 +645,10 @@ The non-integer case, where frame-edge `enable` comparison fails about half the 
 | V1 | B | `drone_pass_02.mp4` | 25 | 35 | 0 | 25 → 60 |
 
 `durationFrames = 60` → `durationSeconds = 60/29.97 = 2.002002`. `framesTotal = 60`.
-`ssSec/tSec`: A `-ss 0.000000 -t 0.834168`, B `-ss 0.000000 -t 1.167834`.
+`ssSec/tSec`: A `-ss 0.000000 -t 0.834168`, B `-ss 0.000000 -t 1.167835`.
+(B's `-t` read `1.167834` until `scripts/check-export-graph.mjs` diffed this transcript against the
+builder: `35 / 29.97` is `1.1678345011678346`, and `sec()` is `toFixed(6)`, which rounds up. The
+prose had truncated it. The builder was right and is unchanged; the literal is corrected.)
 B's placement: `startSec = 25/29.97 = 0.834168`, `startMs = 834`,
 `enableFrom = 24.5/29.97 = 0.817484`, `enableTo = 59.5/29.97 = 1.985319`.
 
@@ -730,6 +742,12 @@ into a mixing tool is why someone picks WAV.
 
 `libx264`, `libx265` and `prores_ks` are all present in the verified build. `-r <OF>` is always
 passed. `-tag:v hvc1` is what makes an h265 mp4 openable by QuickTime and Finder preview.
+
+**The output resolution is always aspect-locked to `doc.width` / `doc.height` by the dialog**
+(`docs/FORMAT.md §6.3`): every entry in the export Resolution list is generated from the project's
+shape, so the export chooses a *tier* and never a *shape*. The builder does **not** enforce it — a
+malformed request with a mismatched aspect still produces a valid graph, letterboxed to the requested
+frame — but nothing in the shipping UI can construct one.
 
 **Known divergence, do not "fix":** `BITRATE_KBPS` in `exportMath.ts` under-reports ProRes at `good`
 and `best` (the table's 82/122 Mbps against 422's ~147 and HQ's ~220 at 1080p30). `exportMath.ts` is
@@ -1498,7 +1516,15 @@ already; a step that "will go green when the other side lands" is not a step, it
 npm run typecheck
 npm run build
 node scripts/check-contract.mjs
+node scripts/check-export-graph.mjs
 ```
+
+**The §1.8 transcripts are no longer diffed by eye.** `scripts/check-export-graph.mjs` rebuilds all
+three and diffs `filterScript` and `args` against the literals held here, plus a fourth case at
+double the document resolution that pins §1.5's placement rescale (`+100` at `req` = `doc`, `+200` at
+`2 × doc`). It runs inside `npm run check` (`docs/FORMAT.md §10.6`), so a change to `offset()`'s
+output or to the ratio arithmetic fails a gate rather than a reading. Satisfying that diff by eye is
+not satisfying it — it is how the `1.167834` typo in case C survived until the script existed.
 
 And the real acceptance test, which `dev:web` cannot perform: launch the packaged app, build a
 timeline through the store over CDP, export it, and confirm the written file's frame count and
@@ -1542,3 +1568,7 @@ Stated plainly so nobody gold-plates. Each of these is a deliberate omission, no
   that is the whole completion story for v1.
 - **No resume, no partial re-render, no render cache.** Cancel deletes the `.part` file and the next
   export starts from zero.
+- **No `pad` filter and no baked-in bars.** Letterbox and pillarbox are the base canvas showing
+  through (§1.5), which is what lets a smaller clip on V2 sit over a larger clip on V1. A `pad`
+  filter would make every clip opaque to its own frame and break stacking. `docs/FORMAT.md §4.1`
+  owns the fit rule; this is the graph-level consequence of it.

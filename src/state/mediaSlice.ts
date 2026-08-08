@@ -554,12 +554,13 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
       // Step 5 applies to this path too. Without it the very first import into
       // an empty project would be measured against the untouched 1920×1080
       // default and warn about a format the project was never given the chance
-      // to adopt. The project fps is passed through unchanged — a media element
-      // cannot report a frame rate — so only the dimensions are adopted, and
-      // adoptSourceFormat itself refuses anything with fps <= 0 or width <= 0.
+      // to adopt. `fps: 0` is the contract's "rate unknown" (FORMAT §7.3) — a media
+      // element cannot report a frame rate — so only the shape is adopted and the
+      // rate stays open for the first import that can actually measure one. Passing
+      // get().fps here would lock the rate to a number nobody measured.
       if (!get().formatLocked && probed.kind === 'video' && probed.width > 0) {
         get().adoptSourceFormat({
-          fps: get().fps,
+          fps: 0,
           width: probed.width,
           height: probed.height,
         });
