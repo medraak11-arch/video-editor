@@ -1251,6 +1251,44 @@ export const selectVideoClipIdAtFrame = (s: StoreState, frame: Frames): ClipId |
   return null;
 };
 
+/**
+ * [stable] The clip on `t` covering `frame`, or null. KIND-AGNOSTIC, and that is the
+ * point of it: `selectAudioClipsAtFrame` filters `track.kind !== 'audio'`, so it cannot
+ * see the audio embedded in a video clip — which EXPORT.md §1.7 mixes and
+ * docs/AUDIO-MONITOR.md §1.1 therefore requires the preview to monitor. O(log n) through
+ * the same binary search, allocating nothing, so an audio voice can subscribe to it
+ * directly under PLAN §1.3 rule 1.
+ */
+export const selectClipIdInTrackAtFrame = (
+  s: StoreState,
+  t: TrackId,
+  frame: Frames,
+): ClipId | null => {
+  const ids = s.clipsByTrack[t];
+  if (!ids || ids.length === 0) return null;
+  const i = lastStartingAtOrBefore(ids, s.clips, frame);
+  if (i < 0) return null;
+  const clip = s.clips[ids[i]];
+  return clip && frame < clipEnd(clip) ? clip.id : null;
+};
+
+/**
+ * [stable] The first clip on `t` starting STRICTLY after `frame`, or null. The primitive
+ * the audio pool preloads from — without a per-track "next clip" there is nothing to
+ * park the idle slot on, and every cut starts from source zero.
+ */
+export const selectNextClipIdInTrackAfter = (
+  s: StoreState,
+  t: TrackId,
+  frame: Frames,
+): ClipId | null => {
+  const ids = s.clipsByTrack[t];
+  if (!ids || ids.length === 0) return null;
+  const i = lastStartingAtOrBefore(ids, s.clips, frame);
+  const candidate = s.clips[ids[i + 1]];
+  return candidate ? candidate.id : null;
+};
+
 /** [stable] The clip that starts next after `frame` on any visible video track, as an ID. */
 export const selectNextVideoClipIdAfter = (s: StoreState, frame: Frames): ClipId | null => {
   let best: Clip | null = null;

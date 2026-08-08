@@ -231,14 +231,21 @@ function isSameFile(a: string, b: string, platform: string): boolean {
 }
 
 /**
- * Every <video> currently holding this source. That is VideoSurface's two-element
- * pool in practice, but it is found by source rather than by reaching into that
- * component's refs: the pool is its private business, and a rename must release
- * the handle whoever is holding it.
+ * Every media element currently holding this source. That is VideoSurface's two-element
+ * pool plus AudioSurface's two elements per track in practice, but it is found by
+ * source rather than by reaching into those components' refs: the pools are their
+ * private business, and a rename must release the handle whoever is holding it.
+ *
+ * `audio` is in the query and it is load-bearing, not tidiness
+ * (docs/AUDIO-MONITOR.md §8.4 change 2). After audio monitoring landed there are up to
+ * twelve <audio> elements on ve-media:// sources — INCLUDING sources they merely
+ * preloaded and will never play — and on Windows an open handle answers `fs.rename`
+ * with EBUSY/EPERM. A `video`-only query would start failing renames with
+ * `file-in-use` on files nothing is even playing.
  */
-function videosHolding(url: string): HTMLVideoElement[] {
+function mediaHolding(url: string): HTMLMediaElement[] {
   if (url === '' || typeof document === 'undefined') return [];
-  return Array.from(document.querySelectorAll('video')).filter(
+  return Array.from(document.querySelectorAll<HTMLMediaElement>('video, audio')).filter(
     (el) => el.getAttribute('src') === url,
   );
 }
@@ -253,7 +260,7 @@ function videosHolding(url: string): HTMLVideoElement[] {
  * does its teardown synchronously, so one turn of the queue is enough and a
  * timeout would only add latency to the common case.
  */
-async function detachSources(elements: HTMLVideoElement[]): Promise<void> {
+async function detachSources(elements: HTMLMediaElement[]): Promise<void> {
   for (const el of elements) {
     el.removeAttribute('src');
     el.load();
@@ -614,7 +621,7 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
    * on these two paths, so the transport effect that would normally do it does
    * not re-run.
    */
-  const reattachSources = (elements: HTMLVideoElement[], url: string): void => {
+  const reattachSources = (elements: HTMLMediaElement[], url: string): void => {
     if (url === '') return;
     for (const el of elements) {
       if (el.getAttribute('src') === url) continue;
@@ -741,7 +748,7 @@ export const createMediaSlice: SliceCreator<MediaSlice> = (set, get) => {
 
       // Steps 2 and 3. The detach happens whatever the outcome, so the re-attach
       // below is unconditional too.
-      const held = videosHolding(previousUrl);
+      const held = mediaHolding(previousUrl);
       await detachSources(held);
 
       let result: RenameResult;

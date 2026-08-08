@@ -23,10 +23,18 @@ import { readStore, useEditorStore } from '../../state/store';
 import { framesToSeconds, framesToTimecode } from '../../lib/time';
 import { SHUTTLE_REVERSE_MAX_SEEKS_PER_SEC } from '../../lib/constants';
 import { selectNextVideoClipIdAfter, selectVideoClipIdAtFrame } from '../../state/timelineSlice';
-
-/** Chromium refuses a playbackRate outside this range. */
-const PLAYBACK_RATE_MIN = 0.0625;
-const PLAYBACK_RATE_MAX = 16;
+import {
+  EMPTY_POOL,
+  EMPTY_SLOT,
+  PLAYBACK_RATE_MAX,
+  PLAYBACK_RATE_MIN,
+  derivePool,
+  effectiveGain,
+  otherSlot,
+  sourceContiguous,
+  transportSilent,
+} from './audioMonitor';
+import type { Pool, Slot, SlotIndex } from './audioMonitor';
 
 /** Half a frame at 30fps: below this, a currentTime write would be a no-op judder. */
 const SEEK_EPSILON_SECONDS = 1 / 60;
@@ -49,50 +57,6 @@ const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
  * once an hour never accumulates its way into a verdict.
  */
 const TRANSIENT_RELOAD_ATTEMPTS = 2;
-
-type SlotIndex = 0 | 1;
-
-interface Pool {
-  srcs: [string, string];
-  active: SlotIndex;
-}
-
-const otherSlot = (i: SlotIndex): SlotIndex => (i === 0 ? 1 : 0);
-
-/**
- * The pool assignment for a given (current, next) pair, derived from the previous
- * assignment. Pure and idempotent — `derivePool(derivePool(p, u, n), u, n)` returns the
- * same object — which is what lets it run during render instead of in an effect.
- *
- * It MUST run during render. Committing the swap from an effect leaves one committed
- * render in which the clip is the new one but the pool is still the old one, so `playable`
- * is false, neither element is active, and the stage paints bare well — a black frame at
- * every cut, which is the exact thing the two-element pool and `parkIdle` exist to
- * prevent. Returns `prev` by identity when nothing moved, so effect dependencies on the
- * pool stay stable.
- */
-function derivePool(prev: Pool, currentUrl: string, nextUrl: string): Pool {
-  const srcs: [string, string] = [prev.srcs[0], prev.srcs[1]];
-  let active = prev.active;
-
-  if (currentUrl !== '' && srcs[active] !== currentUrl) {
-    const idle = otherSlot(active);
-    // The preloaded slot already holds it: swap instead of reloading, which is the
-    // whole point of the pool — the cut lands on a decoded frame.
-    if (srcs[idle] === currentUrl) active = idle;
-    else srcs[active] = currentUrl;
-  }
-
-  const idle = otherSlot(active);
-  if (nextUrl !== '' && nextUrl !== srcs[active] && srcs[idle] !== nextUrl) {
-    srcs[idle] = nextUrl;
-  }
-
-  if (srcs[0] === prev.srcs[0] && srcs[1] === prev.srcs[1] && active === prev.active) {
-    return prev;
-  }
-  return { srcs, active };
-}
 
 export interface VideoSurfaceProps {
   /**
@@ -167,16 +131,43 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
 
   /* ------------------------------------------------------------- the pool */
 
-  const poolRef = useRef<Pool>({ srcs: ['', ''], active: 0 });
+  const poolRef = useRef<Pool>(EMPTY_POOL);
   const nextClipRef = useRef(nextClip);
 
   const elements = useRef<[HTMLVideoElement | null, HTMLVideoElement | null]>([null, null]);
   const lastReverseSeekMs = useRef(0);
 
+  /*
+    The pool is keyed on the CLIP, not on the URL (AUDIO-MONITOR.md §2.2.1), and
+    `derivePool` is shared with the audio voices so there is one implementation of the
+    corrected rule rather than two that can drift apart. Two clips cut from the same
+    source on the same track have identical URLs, so a url-keyed pool never swaps at that
+    cut and leaves one element playing clip A's material while the timeline is inside
+    clip B. Picture survives that today only because the `clipId`-dependent effect below
+    issues a forced `currentTime` write; clip-keying makes it land on the idle element
+    `parkIdle` already seeked to the incoming `mediaIn` instead — a decoded frame rather
+    than a seek, strictly better for picture, and identical in every other case. The
+    `split` case is covered by the contiguity exception and produces no swap at all.
+  */
+  const currentSlot: Slot = currentUrl !== '' && clip ? { url: currentUrl, clipId: clip.id } : EMPTY_SLOT;
+  const nextSlot: Slot = nextUrl !== '' && nextClip ? { url: nextUrl, clipId: nextClip.id } : EMPTY_SLOT;
+  const outgoingId = poolRef.current.slots[poolRef.current.active].clipId;
+  const contiguous = sourceContiguous(outgoingId ? readStore().clips[outgoingId] : null, clip);
+
   // Derived, not stored: the swap lands in the SAME render that changed the clip, so the
   // preloaded element is already the active one on the first paint after a cut.
-  const pool = derivePool(poolRef.current, currentUrl, nextUrl);
-  const playable = currentUrl !== '' && pool.srcs[pool.active] === currentUrl;
+  const pool = derivePool(poolRef.current, currentSlot, nextSlot, contiguous);
+  /*
+    The clip-id term is LOAD-BEARING and must not be weakened back to a url comparison:
+    it is the only thing that keeps `activeVideoRef` null across a same-source cut, and
+    both usePlaybackClock's `frameFromElement` and the audio monitor's reference clock
+    (§3.1) depend on that being null while the pool is stale.
+  */
+  const playable =
+    clip !== null &&
+    currentUrl !== '' &&
+    pool.slots[pool.active].clipId === clip.id &&
+    pool.slots[pool.active].url === currentUrl;
 
   /**
    * The single place refs are published, and it is a layout effect on purpose: writing a
@@ -203,8 +194,12 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
 
     const item = s.items[current.mediaId];
     if (!item || item.status === 'error' || item.url === '') return;
-    // Only sync when the on-screen slot is actually holding this clip's source.
-    if (item.url !== poolRef.current.srcs[poolRef.current.active]) return;
+    // Only sync when the on-screen slot is actually holding THIS CLIP's source. The clip
+    // id, not just the url: at a same-source cut both clips share a url, and syncing
+    // against a slot that still carries the outgoing clip would seek the element away
+    // from the position the pool swap is about to make correct.
+    const activeSlot = poolRef.current.slots[poolRef.current.active];
+    if (activeSlot.clipId !== current.id || activeSlot.url !== item.url) return;
 
     // The source-mapping invariant (PLAN §2.4 invariant 3). PROJECT fps, never media.fps.
     const speed = current.properties.speed || 1;
@@ -242,6 +237,10 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
   /* ----------------------------------------------------- element transport */
 
   const speed = clip?.properties.speed ?? 1;
+  const clipVolume = clip?.properties.volume ?? 1;
+  const trackMuted = useEditorStore(
+    useCallback((s) => (clip ? (s.tracks[clip.trackId]?.muted ?? false) : false), [clip]),
+  );
 
   useEffect(() => {
     const [a, b] = elements.current;
@@ -266,13 +265,31 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
     });
   }, [isPlaying, rate, speed, playable, pool, clipId]);
 
+  /**
+   * The <video> element carries the CLOCK CLIP's audio and nothing else carries it
+   * (AUDIO-MONITOR.md §2.3), so it is a gain consumer under exactly the same law as every
+   * <audio> voice — clip volume, track mute, master volume, master mute, transport.
+   *
+   * This used to read `el.volume = volume` and nothing else, which meant a video clip set
+   * to `volume: 0`, or sitting on a muted track, monitored at FULL LEVEL while exporting
+   * silent. That is a real defect being fixed, not new scope: it is the exact
+   * hear-one-thing-ship-another failure the audio work exists to close.
+   *
+   * `transportSilent` carries §4.2's rule that 8× shuttle is silent. The element MUTES
+   * rather than pausing, because the picture keeps shuttling.
+   */
   useEffect(() => {
+    const gain = effectiveGain(clipVolume, trackMuted, volume, muted, transportSilent(rate));
     elements.current.forEach((el, index) => {
       if (!el) return;
-      el.volume = volume;
-      el.muted = muted || index !== pool.active;
+      const isActive = index === pool.active && playable;
+      el.volume = isActive ? gain : 0;
+      el.muted = !isActive || gain === 0;
+      // At normal speed clip `speed` is applied pitch-preserved, matching export's atempo
+      // chain; while shuttling, tape-style pitch rise is the convention.
+      el.preservesPitch = Math.abs(rate) === 1;
     });
-  }, [volume, muted, pool]);
+  }, [volume, muted, pool, playable, clipVolume, trackMuted, rate]);
 
   /**
    * Park the idle element on the first frame of the clip it is preloading, so the cut
@@ -454,7 +471,7 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
             }}
             className="ve-video-el"
             data-active={index === pool.active && playable ? 'true' : undefined}
-            src={pool.srcs[index] === '' ? undefined : pool.srcs[index]}
+            src={pool.slots[index].url === '' ? undefined : pool.slots[index].url}
             style={index === pool.active && playable ? frameStyle : undefined}
             preload="auto"
             playsInline

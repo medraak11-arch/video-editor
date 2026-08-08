@@ -45,8 +45,13 @@ import { selectVideoClipIdAtFrame } from '../../state/timelineSlice';
  * just attached at a cut, a stream that refused to seek at all. Believing it would map a
  * source time from the wrong place onto the timeline, and clamping it would freeze the
  * playhead for exactly as long as the element takes to catch up. See `tick`.
+ *
+ * Exported because the audio monitor's reference clock applies the SAME trust test to the
+ * SAME element (AUDIO-MONITOR.md §3.1), so that both clocks agree on which one is live.
+ * One number, one predicate, two clocks. It is NOT `EXTERNAL_SEEK_SLACK_FRAMES`, which
+ * measures a different thing and is declared separately in `audioMonitor.ts`.
  */
-const ELEMENT_LAG_TOLERANCE_FRAMES = 2;
+export const ELEMENT_LAG_TOLERANCE_FRAMES = 2;
 
 export function usePlaybackClock(activeVideoRef: RefObject<HTMLVideoElement | null>): void {
   useEffect(() => {

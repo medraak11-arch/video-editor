@@ -2295,6 +2295,29 @@ mounts one `<video>`. `Track.visible` selects which clip is topmost; it does not
 The timeline may run its own rAF for *drag rendering* (transform writes), but that loop must never
 touch the store.
 
+> **Amended by audio monitoring** (`docs/AUDIO-MONITOR.md`, which is normative for the detail).
+> Three things this section predates:
+>
+> 1. **The audio monitor is a SUBSCRIBER to this loop, not a second one.** `PreviewWell` also mounts
+>    `useAudioMonitor()`, which plays every audible clip the pooled `<video>` is not carrying through
+>    per-track `<audio>` pairs. It runs from `useEditorStore.subscribe(s => s.playhead, …)` — driven
+>    by the tick above, at most once per advanced frame — and schedules no animation frames of its
+>    own. It **reads** the playhead and never writes it, so §8.3's single-owner rule is untouched: it
+>    calls no transport action and exports no setter. `grep -rl 'requestAnimationFrame'
+>    src/components/preview/` must still return exactly one path.
+> 2. **The `<video>` element's volume is the full gain law, not the master volume alone.** The
+>    element carries the clock clip's own audio and nothing else carries it, so it is a gain consumer
+>    under the same expression as every voice: clip volume, track mute, master volume, master mute,
+>    and a transport term that mutes it at 8× shuttle. Before this, a video clip set to `volume: 0`
+>    or sitting on a muted track monitored at full level and exported silent.
+> 3. **The pool is keyed on the CLIP ID, with a source-contiguity exception — not on the URL.** Two
+>    clips cut from one source file on one track share a URL, so a url-keyed pool never swaps at that
+>    cut. `derivePool` now lives in `src/components/preview/audioMonitor.ts` and serves both surfaces,
+>    and `VideoSurface`'s `playable` is defined in terms of the active slot's clip id. That
+>    definition is load-bearing for the inverse expression above: it is what keeps `activeVideoRef`
+>    null while the pool is stale, so `frameFromElement` does not map the outgoing source's clock
+>    onto the incoming clip.
+
 ### 8.5 Two drag systems in one region
 
 The timeline is both an HTML5 drop target and a pointer-events manipulation surface. They must not
