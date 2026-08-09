@@ -212,7 +212,7 @@ export function createSplash(launchProjectName: string | null): void {
     // on Windows; the 1px keyline is what separates the card from the desktop.
     hasShadow: false,
     center: true,
-    title: 'Video Editor',
+    title: 'Medrak Cut Video Editor',
     webPreferences: {
       preload: path.join(__dirname, 'splash-preload.js'),
       contextIsolation: true,

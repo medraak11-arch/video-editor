@@ -1,5 +1,5 @@
 ---
-name: Video Editor
+name: Medrak Cut Video Editor
 description: A desktop video editor whose chrome stays dark and quiet so the frame is the only lit thing on screen.
 colors:
   well: "oklch(0.10 0.008 265)"

@@ -56,7 +56,7 @@ function run(
  */
 function diagnosticBlock(build: AppBuild, platform: string): string {
   return [
-    `Video Editor ${build.version}${build.packaged ? '' : ' (development build)'}`,
+    `Medrak Cut Video Editor ${build.version}${build.packaged ? '' : ' (development build)'}`,
     `${platform} ${build.os} ${build.arch}`,
     `Electron ${build.electron} · Chromium ${build.chromium}`,
   ].join('\n');

@@ -44,7 +44,7 @@ publish:
                                 # to the updater and looks like "no update"
 
 appId: dev.local.videoeditor
-productName: Video Editor
+productName: Medrak Cut Video Editor
 copyright: © 2026
 
 directories:
@@ -120,8 +120,8 @@ buildDependenciesFromSource: false
 # which an upgrade keeps the old DefaultIcon in Explorer's cache until logoff.
 fileAssociations:
   - ext: veproj
-    name: Video Editor project
-    description: Video Editor project
+    name: Medrak Cut project
+    description: Medrak Cut project
     role: Editor
     icon: build/veproj.ico
 
@@ -147,7 +147,7 @@ nsis:
   allowElevation: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Video Editor
+  shortcutName: Medrak Cut Video Editor
   # Projects, window layout and theme live in userData. An uninstall removes the
   # program; it does not remove your work.
   deleteAppDataOnUninstall: false

@@ -219,7 +219,7 @@ const isProjectStateReport = (v: unknown): v is ProjectStateReport =>
 const unresponsiveQuestion = (crashed: boolean): Electron.MessageBoxOptions => ({
   type: 'warning',
   noLink: true,
-  title: 'Video Editor',
+  title: 'Medrak Cut Video Editor',
   // A crashed renderer gets Cancel, not 'Keep waiting': there is nothing to wait
   // for, and a 'Keep waiting' that re-raises the same dialog is a loop.
   buttons: crashed ? ['Close without saving', 'Cancel'] : ['Close without saving', 'Keep waiting'],

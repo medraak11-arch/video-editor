@@ -328,7 +328,7 @@ the row that carries it; and `available` → `downloading` → `available` is th
 it commits immediately under §1.7 instead of waiting for an idle instant to remove a row the user is
 looking at. `Not now` is how the strip goes away, and it is already on the `available` row.
 
-The partial file sits in `%LOCALAPPDATA%\Video Editor-updater\pending\` (note the space — §1.8), and
+The partial file sits in `%LOCALAPPDATA%\video-editor-updater\pending\` (note the space — §1.8), and
 **nothing in this application touches it.** electron-updater owns that directory: it overwrites the
 temp file on the next download of the same version rather than resuming, and reaps it on its own
 cache housekeeping. Deleting files under a path the updater owns is the standard way to produce an
@@ -672,7 +672,7 @@ grows the install line, and §1.12 gate 5 step 8 measures them rather than trust
 
 **The reverse direction is also closed.** With `autoInstallOnAppQuit = false`, an ordinary window
 close on a build that has a downloaded update installs nothing. The download sits in
-`%LOCALAPPDATA%\Video Editor-updater\pending\` — electron-updater derives that directory from
+`%LOCALAPPDATA%\video-editor-updater\pending\` — electron-updater derives that directory from
 `app.getName()`, which is the `productName` **`Video Editor`**, so the real path contains a space and
 must be quoted in any shell command written against it — and is offered again on the next launch by
 the first automatic check, which finds it already downloaded and reports `ready` without
@@ -1178,7 +1178,7 @@ GitHub repo: build 0.1.0, install it, publish 0.2.0, press `Check for updates`, 
 Then, on a fresh run: press `Download`, and press **Cancel** at roughly 30 %. Assert that the strip
 returns to `available` (not to no strip at all), that **no further `download-progress` push arrives**
 — sample `update:phase` over the next ten seconds — and record what is left in
-`"%LOCALAPPDATA%\Video Editor-updater\pending"` (quote it; the path contains a space). Then press
+`"%LOCALAPPDATA%\video-editor-updater\pending"` (quote it; the path contains a space). Then press
 `Download` again and assert it completes to `ready`. A `Cancel` that leaves the transfer running, or
 that poisons the next download, is the failure this step exists to find.
 
@@ -1223,9 +1223,9 @@ running version is still **0.1.0** and the update is offered again. That is `aut
 false` working, and it is the property the whole design rests on.
 
 Confirm by looking: the downloaded payload is still sitting in
-`"%LOCALAPPDATA%\Video Editor-updater\pending"` — quote it, the directory name is derived from
+`"%LOCALAPPDATA%\video-editor-updater\pending"` — quote it, the directory name is derived from
 `app.getName()`, which is the `productName` `Video Editor`, so it contains a space and an unquoted
-`dir`/`ls` against it silently lists the wrong thing. `dir "$env:LOCALAPPDATA\Video Editor-updater\pending"`
+`dir`/`ls` against it silently lists the wrong thing. `dir "$env:LOCALAPPDATA\video-editor-updater\pending"`
 must show the `.exe`, and the second offer must report `ready` without re-downloading it.
 
 ## 1.13 `README.md`

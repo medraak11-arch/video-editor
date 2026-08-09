@@ -359,7 +359,7 @@ export function unsavedQuestion(
   return {
     type: 'warning',
     noLink: true, // win32: real buttons, not command links
-    title: 'Video Editor',
+    title: 'Medrak Cut Video Editor',
     buttons: ['Save', 'Do not save', 'Cancel'],
     defaultId: 0, // Enter saves
     cancelId: 2,

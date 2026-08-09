@@ -1,4 +1,4 @@
-# Video Editor
+# Medrak Cut Video Editor
 
 A desktop video editor for one person. Multi-track timeline, keyboard-driven editing, ffmpeg
 export. No accounts, no cloud, no telemetry, no project that lives anywhere but on your disk.
@@ -276,7 +276,7 @@ These are design decisions and honest gaps, not bugs.
   clip is on top; they do not blend. Audio tracks do mix.
 - **No transitions, titles, effects or colour correction.** A cut is a cut.
 - **Autosave is a crash net, not version history.** A snapshot of the open project is written to
-  `%APPDATA%\Video Editor\autosave\` about two seconds after you stop editing, and never less often
+  `%APPDATA%\Medrak Cut Video Editor\autosave\` about two seconds after you stop editing, and never less often
   than every twenty seconds while there are unsaved changes — so a crash or a power cut costs at
   most twenty seconds of editing. While an export is running that becomes a minute, so the snapshot
   never stutters the encode. It never writes to your `.veproj`; only `Ctrl+S` does that. After a
