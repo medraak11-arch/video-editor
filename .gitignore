@@ -13,3 +13,7 @@ out/
 Thumbs.db
 .vite/
 dev-media/
+
+# Local agent tooling. Never tracked.
+CLAUDE.md
+.claude/
