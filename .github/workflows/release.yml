@@ -46,11 +46,17 @@ jobs:
       - name: Fetch pinned ffmpeg
         shell: pwsh
         run: |
-          # A dated BtbN autobuild: an immutable GitHub release asset, so this
-          # URL resolves to the same bytes forever. Verified to return 200 before
-          # being written here — the previous attempt pinned a gyan.dev packages
-          # URL from memory that 404s, which failed the whole release.
-          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-08-13-06/ffmpeg-N-125994-gf944afd040-win64-gpl.zip'
+          # A RELEASE-branch build (n8.1), not a master snapshot, and a dated tag
+          # so the URL resolves to the same bytes forever.
+          #
+          # v0.1.4 pinned master and every export failed. ffmpeg launched, then
+          # rejected the argument list before encoding a frame: -filter_complex_script
+          # has been REMOVED in master. The graph is passed as a file because it
+          # routinely exceeds the Windows command-line limit, so without that option
+          # there is no export at all — while every codec was present and the binary
+          # answered -version perfectly. stage-ffmpeg.mjs now asserts the option, so
+          # this cannot ship again whatever URL ends up here.
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-08-13-06/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-gpl-8.1.zip'
           $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
           $out = "$env:RUNNER_TEMP\ffmpeg"
           Write-Host "Downloading $url"

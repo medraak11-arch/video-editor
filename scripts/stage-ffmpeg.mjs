@@ -168,3 +168,46 @@ for (const { tool } of found) {
 
   console.log(`stage-ffmpeg: ${tool} runs — ${out.trim().split('\n')[0]}`);
 }
+
+/* ------------------------------------------- the options the graph depends on
+   Running is not enough: the encoder can start and still refuse the arguments.
+
+   electron/export/graph.ts passes the filter graph with -filter_complex_script,
+   because the graph routinely exceeds the Windows command-line limit. That
+   option was REMOVED in ffmpeg master. v0.1.4 shipped a master build: ffmpeg
+   launched, rejected the argument list before encoding a frame, exited non-zero,
+   and every export failed with "the encoder stopped before it finished" — while
+   every codec the app names was present and the binary answered -version
+   perfectly.
+
+   So assert the options, not just the binary. An ffmpeg that cannot take the
+   arguments this app builds is the wrong ffmpeg, whatever else it can do. */
+
+const REQUIRED_FFMPEG_OPTIONS = ['filter_complex_script'];
+
+const ffmpegPath = path.join(DEST, `ffmpeg${SUFFIX}`);
+let help = '';
+try {
+  help = execFileSync(ffmpegPath, ['-hide_banner', '-h', 'full'], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+} catch (error) {
+  help = String(error?.stdout || '');
+}
+
+const missingOptions = REQUIRED_FFMPEG_OPTIONS.filter((opt) => !help.includes(opt));
+if (missingOptions.length > 0) {
+  console.error(`\nstage-ffmpeg: the staged ffmpeg is missing ${missingOptions.length > 1 ? 'options' : 'an option'} this app requires.\n`);
+  for (const opt of missingOptions) console.error(`  -${opt}`);
+  console.error(`\n  staged: ${ffmpegPath}`);
+  console.error(`  version: ${(help.split('\n')[0] || '').trim() || 'unknown'}\n`);
+  console.error('-filter_complex_script was removed in ffmpeg master. Use a RELEASE build (n8.x),');
+  console.error('not a master snapshot: the graph is passed as a file because it routinely exceeds');
+  console.error('the Windows command-line limit, and without it every export fails.\n');
+  rmSync(DEST, { recursive: true, force: true });
+  process.exit(1);
+}
+
+console.log(`stage-ffmpeg: required options present — ${REQUIRED_FFMPEG_OPTIONS.map((o) => '-' + o).join(', ')}`);
