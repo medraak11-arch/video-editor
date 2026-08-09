@@ -2,7 +2,7 @@
   "name": "video-editor",
   "productName": "Video Editor",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "main": "dist-electron/electron/main.js",
   "description": "A desktop video editor whose chrome stays dark and quiet so the frame is the only lit thing on screen.",
