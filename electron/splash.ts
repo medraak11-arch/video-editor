@@ -49,7 +49,7 @@ const SPLASH_SHOW_DELAY_MS = 0;
  * nothing slow to report, and it is the only place in this app where something
  * is held open to be looked at.
  */
-const SPLASH_MIN_VISIBLE_MS = 900;
+const SPLASH_MIN_VISIBLE_MS = 450;
 
 /**
  * Hard ceiling on the whole splash wait, counted from the editor being ready.
