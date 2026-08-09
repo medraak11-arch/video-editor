@@ -185,17 +185,35 @@ therefore exactly the security of the host and its TLS — which is why a generi
 
 ## Updates
 
-**This build ships with no update feed and therefore never contacts a server.** There is no
-`publish:` target in `electron-builder.yml`, so the packaged app contains no
-`resources/app-update.yml`, `electron-updater` is never even loaded, and the application menu has no
-*Check for updates* item — because an item that always answers "you're up to date" on a build that
-cannot update is a lie.
+The feed is **GitHub Releases** on this repository, configured in the `publish:` block of
+`electron-builder.yml` and documented in `docs/RELEASE.md` §1.2. That block is what makes
+electron-builder emit `latest.yml` and write `resources/app-update.yml` into the packaged app —
+the only file `electron-updater` reads at runtime.
 
-Configuring a feed is a single block in `electron-builder.yml`, documented in `docs/RELEASE.md` §1.2.
-When one exists the app checks **ten minutes after launch and every six hours after that, never on
-launch**, offers what it finds in a 32 px strip in the titlebar rather than a dialog, and **never
-installs anything without a press** — the install goes out through the same unsaved-changes guard
-the window's close button does, so *Cancel* on that dialog cancels the install too.
+The app checks **ten minutes after launch and every six hours after that, never on launch**, offers
+what it finds in a 32 px strip in the titlebar rather than a dialog, and **never installs anything
+without a press** — the install goes out through the same unsaved-changes guard the window's close
+button does, so *Cancel* on that dialog cancels the install too.
+
+### Cutting a release
+
+```
+npm run release
+```
+
+That is `npm version patch`, which writes the new version into `package.json`, commits it and tags
+it, followed by `git push --follow-tags`. Pushing the tag is the trigger: `.github/workflows/release.yml`
+builds on a Windows runner, re-runs the typecheck and every guard script, and publishes the installer.
+
+**No token is ever handled locally.** The workflow authenticates with the `GITHUB_TOKEN` the platform
+mints for that run — scoped to this repository, expiring when the job ends. Building releases on a
+laptop means a long-lived personal access token sitting in a shell history or an environment
+variable, which is the thing worth avoiding.
+
+The workflow refuses to publish if the tag and `package.json` disagree. They can only diverge if the
+version is edited by hand instead of through `npm version`, and the failure it prevents is silent:
+`latest.yml` would advertise an asset filename that was never uploaded, and every client would see
+"no update" forever.
 
 **There is no rollback.** Downgrades are disabled, so republishing an older release does nothing for
 clients already on the newer one; the remedy for a bad release is a newer release.

@@ -21,7 +21,9 @@
     "stage:ffmpeg": "node scripts/stage-ffmpeg.mjs",
     "readme:keymap": "node scripts/gen-keymap.mjs",
     "dist": "npm run build && npm run icon && npm run stage:ffmpeg && electron-builder --win --config electron-builder.yml",
-    "dist:nobundle": "npm run build && npm run icon && node scripts/stage-ffmpeg.mjs --skip && electron-builder --win --config electron-builder.yml"
+    "dist:nobundle": "npm run build && npm run icon && node scripts/stage-ffmpeg.mjs --skip && electron-builder --win --config electron-builder.yml",
+    "release": "npm version patch && git push --follow-tags",
+    "release:minor": "npm version minor && git push --follow-tags"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.1.1",

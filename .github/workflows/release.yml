@@ -1,0 +1,90 @@
+# Build and publish a release when a version tag is pushed.
+#
+# The point of doing this in CI rather than locally: electron-builder needs a
+# credential to create the release and upload the 136 MB asset, and the only
+# safe place for one is a token the platform issues to the job itself. GITHUB_TOKEN
+# is minted per run, scoped to this repository, and expires when the job ends —
+# nothing is pasted into a shell, nothing is stored on a laptop, nothing to leak.
+#
+# To cut a release:  npm version patch  &&  git push --follow-tags
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# electron-builder creates a release and uploads assets, which is a write.
+# Without this the default token is read-only and the publish step 403s.
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The runner image ships ffmpeg, but it is not a contract — if the image
+      # ever drops it, stage-ffmpeg.mjs would silently produce an installer with
+      # an empty build/ffmpeg/ and every probe and export would fail on a user's
+      # machine. Fail here instead, where it is cheap to see.
+      - name: Verify ffmpeg is available to stage
+        shell: pwsh
+        run: |
+          $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
+          $fp = Get-Command ffprobe -ErrorAction SilentlyContinue
+          if (-not $ff -or -not $fp) {
+            Write-Host "ffmpeg/ffprobe missing from the runner; installing"
+            choco install ffmpeg -y --no-progress
+            $env:PATH = "$env:PATH;C:\ProgramData\chocolatey\bin"
+          }
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The same gates that guard local work. A release that skips them is how a
+      # broken build reaches users.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Contract and guard checks
+        run: npm run check
+
+      # The tag is what triggered this run; package.json is what electron-builder
+      # writes into latest.yml. If they disagree the updater looks for an asset
+      # that was never uploaded and reports "no update" forever.
+      - name: Tag matches package.json version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v',''
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tag package.json=$pkg"
+          if ($tag -ne $pkg) {
+            Write-Error "Tag $tag does not match package.json $pkg. Use 'npm version' so the two are written together."
+            exit 1
+          }
+
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist -- --publish always
+
+      # Kept for inspection when a release looks wrong; the release itself is
+      # what users get.
+      - name: Upload artifacts for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist-release/*.exe
+            dist-release/latest.yml
+          retention-days: 14
