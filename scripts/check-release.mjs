@@ -129,13 +129,21 @@ if (!publishLine) {
       'nobody chose. Removing that line is a bug; changing it is the release decision.',
   );
 } else {
-  pass('explicit top-level `publish:` key', `publish:${publishLine[1] || ' null'}`.trim());
-
   // The block runs from the publish line to the next top-level key.
   const from = publishLine.index;
   const after = yml.slice(from + publishLine[0].length);
   const end = /^\S/m.exec(after);
   const block = after.slice(0, end ? end.index : after.length);
+
+  // Report what is actually configured. The inline capture is empty whenever
+  // publish is a BLOCK, and falling back to " null" there printed the exact
+  // opposite of the truth — a gate that says "publish: null" while a github
+  // provider is configured is worse than one that says nothing.
+  const provider = /provider:\s*(\S+)/.exec(block);
+  pass(
+    'explicit top-level `publish:` key',
+    publishLine[1].trim() || (provider ? `provider: ${provider[1]}` : 'block with no provider'),
+  );
   if (/provider:\s*generic/.test(block)) {
     const url = /^\s*-?\s*url:\s*(\S+)/m.exec(block);
     if (!url || !url[1].startsWith('https://')) {

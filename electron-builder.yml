@@ -36,7 +36,12 @@
 #       url: https://updates.example.com/video-editor/   # HTTPS ONLY — §1.9
 #       channel: latest
 # ---------------------------------------------------------------------------
-publish: null
+publish:
+  - provider: github
+    owner: medraak11-arch
+    repo: video-editor
+    releaseType: release        # not 'draft'; a draft release is invisible
+                                # to the updater and looks like "no update"
 
 appId: dev.local.videoeditor
 productName: Video Editor
