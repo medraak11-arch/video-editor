@@ -121,3 +121,50 @@ for (const { tool, from } of found) {
 console.log(
   `stage-ffmpeg: ${copied === 0 ? 'up to date' : `${copied} copied`} in ${path.relative(ROOT, DEST)} — ${mb(total)} will ship with the app`,
 );
+
+/* ------------------------------------------------------- prove the copy runs
+   Resolving a tool and copying it is NOT evidence that the copy works, and the
+   difference shipped a broken 0.1.1.
+
+   `choco install ffmpeg` puts a 383 KB SHIM on PATH — a launcher that finds the
+   real binary by a path relative to its own install root. `ffmpeg -version`
+   passes, because the shim works where it lives. Copied into build/ffmpeg/ it
+   is a corpse: it looks for `..\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe` beside
+   the app and reports "Cannot find file". Every import failed with an ffprobe
+   error on a build whose CI was green.
+
+   So: execute what was actually staged, from where it was staged. A tool that
+   cannot answer -version is not shippable, and finding that out here costs
+   seconds instead of a release. */
+
+const looksLikeFfmpeg = (out) => /\bff(mpeg|probe) version\b/i.test(out);
+
+for (const { tool } of found) {
+  const staged = path.join(DEST, `${tool}${SUFFIX}`);
+  let out = '';
+  let ok = false;
+  try {
+    out = execFileSync(staged, ['-version'], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    ok = looksLikeFfmpeg(out);
+  } catch (error) {
+    out = String(error?.stdout || '') + String(error?.stderr || error?.message || '');
+  }
+
+  if (!ok) {
+    console.error(`\nstage-ffmpeg: the staged ${tool} does not run.\n`);
+    console.error(`  staged: ${staged} (${mb(sizeOf(staged))})`);
+    console.error(`  said:   ${out.trim().split('\n')[0] || '(no output)'}\n`);
+    console.error('A shim or wrapper was staged instead of a real binary. Chocolatey installs one');
+    console.error('by default; it works on PATH and dies the moment it is copied elsewhere.');
+    console.error('Point at a real static build instead:');
+    console.error('  FFMPEG_DIR=<folder-with-the-real-exes> npm run stage:ffmpeg\n');
+    rmSync(DEST, { recursive: true, force: true });
+    process.exit(1);
+  }
+
+  console.log(`stage-ffmpeg: ${tool} runs — ${out.trim().split('\n')[0]}`);
+}

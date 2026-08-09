@@ -31,22 +31,37 @@ jobs:
           node-version: 22
           cache: npm
 
-      # The runner image ships ffmpeg, but it is not a contract — if the image
-      # ever drops it, stage-ffmpeg.mjs would silently produce an installer with
-      # an empty build/ffmpeg/ and every probe and export would fail on a user's
-      # machine. Fail here instead, where it is cheap to see.
-      - name: Verify ffmpeg is available to stage
+      # Fetch a PINNED static build rather than using whatever is on the runner.
+      #
+      # v0.1.1 and v0.1.2 shipped broken because this step trusted PATH. Chocolatey
+      # installs ffmpeg as a 383 KB SHIM — a launcher that locates the real binary
+      # by a path relative to its own install root. `ffmpeg -version` passed here,
+      # because a shim works where it lives; stage-ffmpeg.mjs then copied the shim
+      # into the installer, where it looked for `..\lib\ffmpeg\...` beside the app
+      # and died. Every import failed with an ffprobe error on a green build.
+      #
+      # A pinned URL also makes the release reproducible and matches the build the
+      # app is developed against, so codec coverage cannot quietly differ between
+      # a local build and a published one.
+      - name: Fetch pinned ffmpeg
         shell: pwsh
         run: |
-          $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
-          $fp = Get-Command ffprobe -ErrorAction SilentlyContinue
-          if (-not $ff -or -not $fp) {
-            Write-Host "ffmpeg/ffprobe missing from the runner; installing"
-            choco install ffmpeg -y --no-progress
-            $env:PATH = "$env:PATH;C:\ProgramData\chocolatey\bin"
-          }
-          ffmpeg -version | Select-Object -First 1
-          ffprobe -version | Select-Object -First 1
+          $url = 'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.1-essentials_build.zip'
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $out = "$env:RUNNER_TEMP\ffmpeg"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $out -Force
+          $bin = (Get-ChildItem -Path $out -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          if (-not $bin) { Write-Error 'ffmpeg.exe not found in the archive'; exit 1 }
+          # Size is the cheap tell: a real static ffmpeg is tens of MB, a shim is under one.
+          $size = (Get-Item "$bin\ffmpeg.exe").Length
+          Write-Host "ffmpeg.exe is $([math]::Round($size/1MB,1)) MB at $bin"
+          if ($size -lt 10MB) { Write-Error "That is a shim or wrapper, not a real build"; exit 1 }
+          & "$bin\ffmpeg.exe" -version | Select-Object -First 1
+          & "$bin\ffprobe.exe" -version | Select-Object -First 1
+          # stage-ffmpeg.mjs reads this, and verifies the STAGED copy runs.
+          "FFMPEG_DIR=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install dependencies
         run: npm ci
