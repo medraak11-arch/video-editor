@@ -81,6 +81,19 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # BEFORE the checks, not as part of `npm run dist` later. `check-grade`
+      # measures the real encoder on the chain the builder actually emits, and
+      # CREATIVE §7.1 gives it NO SKIP PATH — an absent binary is a failure
+      # naming this step, because "skipped because unavailable" is how a suite
+      # rots into decoration. The fetch above only puts ffmpeg in FFMPEG_DIR;
+      # `build/ffmpeg/` is where the gate and electron-builder both look, and
+      # nothing populated it until `npm run dist`, three steps too late.
+      #
+      # v0.2.0's first run failed here and published nothing, which is the gate
+      # working: it refused to certify a colour pipeline it could not measure.
+      - name: Stage ffmpeg for the gates
+        run: npm run stage:ffmpeg
+
       - name: Contract and guard checks
         run: npm run check
 
