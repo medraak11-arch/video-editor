@@ -170,10 +170,11 @@ interface MoveGesture extends Common {
   /** The engaged snap target, or null. Drives the ~90ms magnetic settle. */
   snapTarget: Frames | null;
   /**
-   * CREATIVE §12. True when this drop will INSERT rather than move: the ghost's
-   * start edge has snapped to a boundary and the ordinary move was refused for
-   * overlap. It decides which store action `endGesture` commits, so the drop can
-   * never do something the preview did not show.
+   * CREATIVE §12. True when this drop will INSERT rather than move — that is,
+   * the ordinary move was refused for overlap and `planInsert` accepted the
+   * placement. No snap and no threshold are involved. It decides which store
+   * action `endGesture` commits, so the drop can never do something the preview
+   * did not show.
    */
   insert: boolean;
   /**
@@ -495,20 +496,22 @@ export function useTimelineInteraction(
       /* ------------------------------------------------ insert (CREATIVE §12)
 
          Attempted ONLY when the ordinary move was refused for OVERLAP and the
-         ghost's START edge is the one that snapped. Both halves matter:
+         ghost would overlap something. That is the WHOLE condition.
 
-         · Overlap, because §12 adds a third outcome to a set of two rather than
-           changing one. A drop that already fits is an ordinary move, and the
-           §12.3 example — aiming at a seam with three seconds of gap after it —
-           lands here, fits, and pushes nothing, which is the stated result.
-         · Start edge, because §12.2 makes insertion a start-edge property. The
-           most common snap in the whole application is butting a clip's start
-           against the previous clip's END, and an end-edge landing must stay the
-           abut it has always been.
+         IT USED TO ALSO REQUIRE A SNAP — `snapped.edge === 'start' && guide !==
+         null` — and that is the bug the user hit: "blocked by x whenever i try
+         to move a clip to the seam". The capture window is SNAP_THRESHOLD_PX,
+         8px, about ±2 frames at ordinary zoom, while a mouse reports every
+         18-23px. A human does not narrowly miss a window that small; they step
+         clean over it, so the feature almost never armed. The deeper error was
+         reusing a POSITIONING threshold to gate a BEHAVIOUR: snapping is allowed
+         to be forgiving because missing it costs three frames and a nudge, and
+         borrowing it here changed what a miss costs into "the edit you asked for
+         does not happen".
 
-         `kindRefusal` is checked too: a video clip over an audio lane is refused
-         before geometry is consulted at all, and inserting it there would be
-         answering a question the user did not ask.
+         So: no magnet, no edge test, no window. `kindRefusal` stays — a video
+         clip over an audio lane is refused before geometry is consulted at all,
+         and inserting it there would answer a question the user did not ask.
 
          The plan comes from the STORE, never from arithmetic here. `planInsert`
          is the same function `insertClips` runs, so the ghost below and the drop
@@ -516,20 +519,26 @@ export function useTimelineInteraction(
          prevent. */
       let pushed: readonly Clip[] = EMPTY_PUSH;
       let inserting = false;
-      if (
-        !first.ok &&
-        first.reason === 'overlap' &&
-        kindRefusal === null &&
-        snapped.edge === 'start' &&
-        guide !== null
-      ) {
+      /**
+       * Where the moving clips actually LAND, by id, when that is not simply
+       * `start + delta`. The half-clip rule resolves a drop over a clip to that
+       * clip's start or end, so the landing point can differ from the pointer —
+       * and the ghost has to show the landing, not the pointer, or the drop
+       * commits somewhere the preview never drew.
+       */
+      let resolved: Map<ClipId, Frames> | null = null;
+      /** The plan's own resolved boundary. The caret marks THIS and nothing else. */
+      let insertAt: Frames | null = null;
+      if (!first.ok && first.reason === 'overlap' && kindRefusal === null) {
         const attempt = planInsert(s, g.ids, delta, track, g.primaryTrackId);
         if (attempt.ok) {
           inserting = true;
           pushed = attempt.pushed;
+          insertAt = attempt.insertAt;
+          resolved = new Map(attempt.clips.map((clip) => [clip.id, clip.start]));
           // An insert is a legal outcome, not a refused one: clear the refusal
-          // the failed `planMove` was about to raise, and keep the snapped delta
-          // rather than clamping back to the last non-overlapping frame.
+          // the failed `planMove` was about to raise, and keep the pointer's
+          // delta rather than clamping back to the last non-overlapping frame.
           reason = null;
           blocking = null;
         }
@@ -564,6 +573,14 @@ export function useTimelineInteraction(
       for (const el of g.els) {
         const id = el.dataset.clipId as ClipId | undefined;
         const clip = id ? s.clips[id] : undefined;
+        // While inserting, the horizontal offset comes from the PLAN, not from
+        // the pointer. The half-clip rule can resolve a drop over a clip to that
+        // clip's start or its end, so `start + delta` is no longer where the
+        // clip lands — and a ghost drawn at the pointer would promise a frame
+        // the commit does not use. Falls back to the uniform delta for any clip
+        // the plan does not name, and for every ordinary move.
+        const landed = clip && resolved ? resolved.get(clip.id) : undefined;
+        const clipDx = landed !== undefined && clip ? framesToPx(landed - clip.start, s.zoom) : dx;
         let dy = 0;
         // Kind-scoped, exactly as planMove is (docs/LINKING.md §5.2b): the lane
         // offset belongs to the lane the pointer is over, so a linked audio member
@@ -575,21 +592,35 @@ export function useTimelineInteraction(
         }
         if (magnetic) el.dataset.snapping = 'true';
         else delete el.dataset.snapping;
-        el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+        el.style.transform = `translate3d(${clipDx}px, ${dy}px, 0)`;
         if (reason) el.dataset.refused = 'true';
         else delete el.dataset.refused;
       }
 
-      // The caret REPLACES the snap guide while inserting rather than joining
-      // it. Both mark the same frame, so drawing both puts a 1px accent line
-      // underneath a 2px caret at the same x — two marks for one fact, and the
-      // quieter one is the one that says less. The caret is also the only signal
-      // that survives §12.6's hard case, where the cascade is absorbed at once
-      // and no clip visibly shifts.
-      if (inserting && guide !== null) {
+      /* THE CARET, at the RESOLVED boundary — not under the pointer.
+
+         This is now the load-bearing signal of the whole gesture rather than a
+         garnish on it. With the half-clip rule the drop no longer lands where
+         the pointer is: anywhere over a clip's first half resolves to that
+         clip's start and anywhere over its second half to its end, so a
+         catchment that used to be ±2 frames is now half a clip wide. That is
+         what makes the feature reachable by a human, and it is exactly what
+         makes the landing point unguessable without being drawn. The caret says
+         WHERE the drop lands; the live displacement says WHAT it costs.
+
+         The frame is `InsertPlan.insertAt`, read straight off the plan. It is
+         reported for exactly this reason: a caret that worked the boundary out
+         for itself — from the plan's clips, or by re-applying the half-clip rule
+         — would be the second implementation §12.7 exists to prevent, and the
+         one that drifts is always the one drawn on screen.
+
+         It REPLACES the snap guide rather than joining it — two marks for one
+         fact, and the quieter one says less. */
+      if (inserting && insertAt !== null) {
         const landingTrackId =
-          track !== 0 ? trackAtKindOffset(s, g.primaryTrackId, track) : g.primaryTrackId;
-        showInsertCaret(guide, landingTrackId ?? g.primaryTrackId);
+          (track !== 0 ? trackAtKindOffset(s, g.primaryTrackId, track) : g.primaryTrackId) ??
+          g.primaryTrackId;
+        showInsertCaret(insertAt, landingTrackId);
         showSnapGuide(null);
       } else {
         showInsertCaret(null, undefined);

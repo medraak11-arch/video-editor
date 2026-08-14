@@ -1607,6 +1607,41 @@ fixed, and none of them is caught by the rule that catches the one before:
    with `V` bound twice, which disproves "torn file" and names the real cause in
    one look. It costs one `rmSync` that does not run.
 
+9. **An instrument error that was also the user's experience.** The most
+   expensive entry in this list, because the finding was *made, twice, correctly
+   diagnosed, and filed under the wrong heading.*
+
+   Verifying §12, two full runs reported "no caret, no insert". The cause was
+   found exactly right:
+
+   > "The seam capture is ±2 frames — 6 px at 3 px/frame — and my drags moved in
+   > 18–23 px steps, jumping straight across it. A 3 px sweep found the caret
+   > immediately."
+
+   Correct, and filed as a **harness defect**, which for the purpose of
+   completing the measurement it was. The 3 px sweep was adopted, the caret
+   appeared, the feature passed, and the pass moved on.
+
+   **18–23 px per sample is ordinary mouse speed.** The verifier had reproduced
+   the shipped bug twice and worked around it with a technique no human has. The
+   user reported the same failure within days, in the same words the refusal
+   uses. Nobody asked whether a *person* hits an 8 px window, because the
+   question that was being answered was "does the feature work", and with a slow
+   enough pointer it did.
+
+   **Rule: when you work around a problem to complete a measurement, ask whether
+   the workaround is available to the user.** If it is not, the workaround is the
+   finding. Slowing a drag, widening a tolerance, retrying a flake, picking a
+   friendlier fixture — each is a legitimate instrument fix *and* a candidate
+   defect report, and which one it is depends entirely on whether the user can do
+   the same thing.
+
+   The tell is cheap and worth making routine: **name the workaround in the
+   report even when the measurement succeeded.** This one was named, plainly and
+   in detail — and read only as harness housekeeping, by the verifier and by the
+   planner both. A workaround section in a passing report is where the next
+   defect of this shape will be sitting.
+
 The through-line is that being right about the mechanism is not the same as
 having checked it, and that each new form of rigour created the blind spot the
 next one found. That is the argument for §10 existing at all, and for not
@@ -2242,115 +2277,133 @@ argue against it:
 if it is ever wanted it gets its own command and its own name, not a silent ride
 on every drag.
 
-### 12.2 No modifier. Insertion is POSITIONAL, and it reuses the snap.
+### 12.2 Displacement is UNCONDITIONAL, and the catchment is the whole clip
 
-There is no key to hold. **A drop inserts when the dragged clip's START lands
-exactly on a clip boundary on the track it is landing on AND the drop would
-otherwise be refused for `overlap`.** Anywhere else, behaviour is exactly as it
-is today: a legal drop lands, an overlapping drop with no start-edge snap
-refuses.
+**An overlapping drop inserts and pushes. Always.** Not when the magnet is on,
+not when the start edge lands within a few pixels of a boundary, not in a mode.
+If a drop would have been refused for `overlap`, the clips make space instead.
 
-**AMENDED — the first clause alone was wrong, and dangerously so.** Read by
-itself it makes *every abutting drop an insert*, and butting one clip's start
-against the previous clip's end is the single most common snap in the
-application. Every ordinary assembly edit would have rearranged the timeline.
-Caught by the timeline owner, from this section's own framing of "a third outcome
-added to a set of two" — but the literal reading is the one a fresh reader takes,
-so the condition is now stated in full in one sentence.
+**Where it lands is decided by which half of the overlapped clip you are over:**
 
-Both clauses are load-bearing:
+> The dragged clip's start edge is over some existing clip `X`. If it is in
+> **X's first half**, the drop lands at **X.start** and X is pushed right. If it
+> is in **X's second half**, the drop lands at **X.end**.
 
-- **Start-edge snap** distinguishes a seam from an abut. A clip whose END snaps
-  to the next clip's start is an ordinary butt, not an insert.
-- **Would-be `overlap`** is what makes the caret mean something. §12.6 says the
-  caret distinguishes an insert from an ordinary drop; without this clause there
-  is no ordinary drop left to distinguish it from.
+That is the universal drag-to-reorder convention — over the top half, insert
+before; over the bottom half, insert after — and it means the catchment for an
+insert is **half a clip wide in each direction** rather than a few pixels. There
+is no window to hit and no way to fall between two of them.
 
-The two clauses together give the caret a crisp guarantee: **when the caret
-shows, at least one clip is genuinely displaced.** §12.3's own example — a seam
-with three seconds of gap after it, taking a two-second clip — does not overlap,
-so it never reaches the insert path at all; it is an ordinary drop that shifts
-nothing, which is the same outcome by a simpler route.
+It also removes a special case rather than adding one: with every position over a
+clip resolving to one of that clip's two boundaries, **there is no "inside a
+clip" to refuse.** State's cascade needs no change — the resolved insertion point
+is always a boundary, so no clip ever starts before it and reaches past it, which
+was the condition that produced `overlap`.
 
-That guarantee revises §12.6's "the cascade is absorbed immediately and nothing
-visibly shifts". On a single lane that case no longer exists. It survives as the
-**linked-pair** case: lane A overlaps and pushes, lane B has room and does not,
-so the caret is showing while one of the two lanes stays still. The caret still
-earns its place there, and that is now the case it is for.
+#### The cause: an 8-pixel window that gated a behaviour
 
-That is the answer to "how does the user choose", and the user chose it:
-*"point it at the seam between two clips."* Intent is expressed by aim, not by
-mode. Three things fall out for free:
+`SNAP_THRESHOLD_PX` is 8, clamped by zoom to ±2 frames — about **6 px at 3 px per
+frame**. To insert, the dragged clip's start edge had to be sampled inside that
+window during a pointermove. **Ordinary mouse movement steps 18–23 px between
+samples**, so the window is not narrowly missed, it is usually **stepped clean
+over**.
 
-- **`Alt` stays unspent.** This project has a rule that Alt means one thing.
-- **Ordinary dragging is unchanged**, so no existing gesture becomes dangerous.
-- **The capture zone already exists.** `SnapEngine.snapTranslation` already takes
-  the start and end of every moving clip as `edges` and every clip boundary as
-  `targets`, and already returns the frame landed on. A seam capture *is* a snap.
-  No new threshold, no new tuning, nothing new competing for space.
+Snapping's threshold is forgiving because missing it costs nothing — you land
+three frames off and nudge. Reusing it to gate a *behaviour* changed what a miss
+costs: the timeline does not rearrange at all, and the user is told a
+neighbouring clip is in the way. **A threshold tuned for a consequence-free miss
+was made to carry a consequential one.** That is the design error, and it is
+mine.
 
-**The DRAG therefore requires snapping to be ON.** With snap disabled a drag
-cannot insert, because there is no seam capture without a snap. That is coherent
-rather than a limitation: snap-off is the deliberate "let me place this freely"
-mode, and seam insertion is by definition a structured placement.
+`SNAP_THRESHOLD_PX` does not move. It is correct for positioning, it is in
+`src/lib/constants.ts` which belongs to nobody, and under this ruling insertion
+no longer consults it. The shared-file question dissolves rather than needing an
+owner.
 
-**RULED — the gate belongs to the GESTURE, not to the operation. It does not
-reach `edit.insertAtPlayhead` (§12.8), and it comes out of `planInsert`.**
+#### This section was wrong twice, and the user said so twice
 
-Three things decide it, and the first is a fact about the code rather than an
-argument:
+The first draft required a start-edge snap. The second added a would-be-`overlap`
+clause and gated everything on `snapEnabled`. Both over-constrained it, and the
+second shipped a build that tells a user their edit is "Blocked by X" — naming
+the neighbouring clip — when the real cause is a pixel window nothing in the
+interface mentions.
 
-1. **The `!s.snapEnabled` branch inside `planInsert` is already dead for the drag
-   path.** `applyMove` reaches `planInsert` only when
-   `snapped.edge === 'start' && guide !== null`, and `snapTranslation` returns
-   `edge: null` whenever snapping is suppressed — so a drag can never arrive
-   there with snapping off. The branch's only *live* effect is to cripple the
-   keyboard command. It looks like a shared safeguard and is not one, which is
-   precisely the kind of accident that reads as consistency.
-2. **`snapEnabled` is a positioning preference, not a safety.** Making it also
-   mean "disable a named command" gives one control two behaviours — the same
-   thing this project refused when it rendered the subtitle file input *only*
-   where the native bridge is absent. No other command consults it;
-   `splitAtPlayhead` does not, `addMarker` does not.
-3. **A named command has no aim to assist.** Snap exists to help a pointer land
-   on a meaningful frame. `V` on a selection is already an unambiguous request
-   for a named operation, and refusing it because a pointer aid is switched off
-   is a non-sequitur.
+The request, twice, in their own words:
 
-**I am withdrawing my own sentence on the other side.** An earlier draft here
-said snap-off "is also the only way to get the old refuse-on-overlap behaviour
-back, which is worth having." That was a rationalisation of a side effect
-written to make the coupling feel less arbitrary, not a designed promise, and it
-was the strongest argument for the position I am now rejecting. Nobody flips the
-magnet off as an insert safety; they flip it off to place something precisely.
+> *"let them move each other. **for example** if i drag a clip that was at the
+> end and point it at the seam between two clips…"*
 
-So `planInsert` does not consult `snapEnabled` at all. Its job is "can these
-clips be inserted here", not "is the user's magnet on". The gesture gate stays
-where it already lives and already works, in `applyMove` — and the ghost and the
-commit still cannot disagree, because both reach `planInsert` only through it.
+> *"**as i said** they should behave like soap bubbles and cause clips to scootch
+> in order to make space"*
 
-**The three spatial claims do not collide, and the reason is phase, not
-geometry.** The trim edge (0.8→6.8px) and the transition handle (6.8→16.8px) are
-**grab-time** affordances on a clip the pointer is resting over. Seam capture is
-a **drop-time** property of the dragged ghost's leading edge, during a gesture
-that is already captured — and while a move is in flight, no trim or transition
-handle is live. A third spatial claim in that region would have been a problem.
-This is not one, because it never exists at the same time as the other two.
+**"Let them move each other" is the requirement. The seam is an example** —
+introduced with "for example" — and I promoted an example to a precondition. When
+a user states a requirement twice without qualification and the design keeps
+adding qualifiers, the design is wrong.
 
-**`SnapEngine` needs one addition.** `SnapOutcome` reports `{ delta, target }` —
-the frame landed on, but not *which moving edge* landed on it. Insertion is a
-property of the **start** edge specifically: a clip whose END snaps to the next
-clip's start is an ordinary abutting drop, not an insert.
+#### Why the magnet gate had to go, and why its cost was imaginary
 
-```ts
-export interface SnapOutcome {
-  delta: Frames;
-  target: Frames | null;
-  /** Which moving edge landed on `target`. null when nothing snapped.
-   *  Insertion is a START-edge property; an END-edge snap is an ordinary abut. */
-  edge: 'start' | 'end' | null;
-}
-```
+The argument for keeping it: a user who wants to drop a clip *on top of* another
+needs a way to say so, and turning the magnet off was that way.
+
+**That workflow does not exist.** There is no overwrite in this application —
+`planMove` refuses an overlapping drop and nothing happens. Snapping off never
+let anyone place a clip over another; it only let them make the operation
+**fail**. Removing the gate costs nothing anyone could previously do.
+
+That is the second sentence struck from this section for being a rationalisation
+of a side effect dressed as a designed promise — the same move both times,
+reaching for a reason that a limitation is really a feature.
+
+Three more, each sufficient on its own:
+
+1. **The gate was invisible.** Nothing in the interface connects the magnet to
+   whether clips make space, and the caret — the only signal — is precisely what
+   fails to appear.
+2. **The refusal misattributed.** It named the neighbouring clip when the cause
+   was a setting. Already ruled unacceptable for `edit.insertAtPlayhead` (§12.8);
+   the identical argument was left standing for the drag.
+3. **Safety is redundant here.** §12.6 renders the displacement **live, before
+   release** — the user watches the clips move and can abort — and undo is one
+   entry. There is nothing left for a hidden mode to protect.
+
+#### What snapping does now: exactly what it says
+
+`snapEnabled` is a **positioning aid and nothing else.** It decides where a
+non-overlapping drop lands. It has no say in whether clips make room. One rule
+for the drag and the command, so there is one behaviour to learn.
+
+- **`Alt` stays unspent.**
+- **`SnapOutcome.edge` stays.** No longer load-bearing for insertion, but correct,
+  free, and used by the caret to sit on a boundary. Timeline's refusal to infer
+  edge kind from index parity stands on its own merits.
+- **Nothing new competes for space.** No threshold, no tuning, no third hit zone —
+  the catchment is the clip itself.
+
+#### The caret becomes MORE necessary, not less
+
+It now marks a landing point that can differ from where the pointer is — the
+resolved boundary rather than the frame under the cursor. That is exactly the job
+a drag-reorder indicator does, and without it a half-clip catchment would be
+guesswork.
+
+- **It shows whenever the drop will insert**, at the resolved boundary.
+- Its guarantee simplifies: **caret means the drop lands here and something
+  makes room.**
+- With §12.6's live displacement it is a complete statement: the caret says
+  *where*, the moving clips say *what it costs*.
+
+#### Knock-ons, stated so nobody has to derive them
+
+- **`check-insert` assertion 9** becomes "`snapEnabled` changes nothing" for
+  **both** entry points. Magnet on and off must produce byte-identical documents.
+- **New assertions:** a drop whose start edge is in a clip's first half lands at
+  that clip's start; in its second half, at its end; and **no drop over a clip
+  ever refuses for `overlap`.**
+- **`verify` gains and loses a case.** Gone: "with snapping off an overlapping
+  drag refuses." New: **with snapping off, an overlapping drag still inserts**;
+  and — the case that would have caught this — **a drag performed at ordinary
+  human speed, 18–23 px per sample, must insert reliably.**
 
 ### 12.3 The cascade — displacement propagates and stops
 

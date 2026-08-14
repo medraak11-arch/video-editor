@@ -156,9 +156,15 @@ export type PlanResult =
  *
  * Readonly because both callers only ever read it, and the empty case is a
  * shared constant rather than a fresh array per pointermove.
+ *
+ * `insertAt` is the RESOLVED insertion boundary (§12.2) — the frame the drop
+ * actually landed on after the half-clip rule, which is generally NOT the frame
+ * under the pointer. It is reported rather than left for the caller to work out
+ * because the insert caret has to mark that boundary, and a caret computing it
+ * a second time is the two-implementations failure this whole document is about.
  */
 export type InsertPlan =
-  | { ok: true; clips: Clip[]; pushed: readonly Clip[] }
+  | { ok: true; clips: Clip[]; pushed: readonly Clip[]; insertAt: Frames }
   | { ok: false; reason: MoveFailure; blockingClipId: ClipId | null };
 
 export interface AddClipInput {
@@ -806,14 +812,61 @@ function planPlacement(
 const NO_PUSHED: readonly Clip[] = [];
 
 /**
+ * The moving clip whose START EDGE aims the drop (§12.2). The gesture's own lane
+ * is `primaryTrackId` — that is the clip under the pointer — so a group resolves
+ * against the member the user is actually holding, and every other member takes
+ * the same shift. Falls back to the earliest mover when nothing originates on the
+ * primary lane, which keeps a programmatic caller that passes an unrelated
+ * `primaryTrackId` from resolving against nothing.
+ *
+ * Matched on the clip's ORIGINAL track, read back out of the store, because the
+ * placed copies already carry their destination lane.
+ */
+function insertReference(
+  s: StoreState,
+  placed: readonly Clip[],
+  primaryTrackId: TrackId | undefined,
+): Clip | null {
+  let onPrimary: Clip | null = null;
+  let earliest: Clip | null = null;
+  for (const clip of placed) {
+    if (earliest === null || clip.start < earliest.start) earliest = clip;
+    if (s.clips[clip.id]?.trackId !== primaryTrackId) continue;
+    if (onPrimary === null || clip.start < onPrimary.start) onPrimary = clip;
+  }
+  return onPrimary ?? earliest;
+}
+
+/** The clip on `trackId` whose [start, end) contains `frame`, ignoring the movers. */
+function clipCoveringFrame(
+  s: StoreState,
+  trackId: TrackId,
+  frame: Frames,
+  exclude: ReadonlySet<ClipId>,
+): Clip | null {
+  const ids = s.clipsByTrack[trackId];
+  if (!ids) return null;
+  for (const id of ids) {
+    if (exclude.has(id)) continue;
+    const clip = s.clips[id];
+    if (!clip) continue;
+    if (clip.start > frame) break; // sorted ascending: nothing later can cover it
+    if (frame < clip.start + clip.duration) return clip;
+  }
+  return null;
+}
+
+/**
  * Dry run of an INSERT — CREATIVE §12. Pure, and the same contract `planMove`
  * has: the ghost calls it on every pointermove to render the displacement, and
  * `insertClips` calls it again on the drop. ONE implementation, two callers, so
  * the preview and the commit cannot disagree about what is about to happen.
  *
  * The difference from `planMove` is what happens on a collision. `planMove`
- * refuses; this cascades the occupants to the right and reports them in
- * `pushed`, which is what the live preview transforms.
+ * refuses; this resolves the landing to a clip boundary (§12.2, the half-clip
+ * rule below), cascades the occupants to the right, and reports them in
+ * `pushed`, which is what the live preview transforms. Displacement is
+ * UNCONDITIONAL — a drop over a clip never refuses for `overlap`.
  *
  * THE SOURCE GAP IS NOT CLOSED, AND THAT IS DELIBERATE (§12.1). Nothing in here
  * touches the track the clips came FROM: an insert changes the target side only,
@@ -849,8 +902,64 @@ export function planInsert(
   // `edit.insertAtPlayhead`, a NAMED command that has no aim for snapping to
   // assist. It also failed silently in the wrong words: the refusal came back as
   // `overlap`, so nothing told the user the magnet was why.
-  const placed = planPlacement(s, ids, deltaFrames, deltaTrackIndex, primaryTrackId);
-  if (!placed.ok) return placed;
+  const first = planPlacement(s, ids, deltaFrames, deltaTrackIndex, primaryTrackId);
+  if (!first.ok) return first;
+
+  // ---- §12.2, THE HALF-CLIP RULE -----------------------------------------
+  //
+  // The insertion point is resolved from the dragged clip's start edge: over the
+  // FIRST half of a clip it lands at that clip's start, over the SECOND half at
+  // its end. Universal drag-to-reorder convention, and it makes the catchment
+  // half a clip wide in each direction.
+  //
+  // It replaces a seam capture gated on SNAP_THRESHOLD_PX. That threshold is 8px,
+  // clamped by zoom to roughly ±2 frames — about 6px on screen — while ordinary
+  // mouse movement samples every 18–23px. The window was not narrowly missed, it
+  // was STEPPED CLEAN OVER: the pointer went from before the seam to past it
+  // without ever sampling inside. Verification only ever hit it using a 3px
+  // sweep, which is a technique no hand has, and the user's report was
+  // "blocked by x whenever i try to move a clip to the seam".
+  //
+  // The deeper error was reusing snapping's threshold for something with
+  // different stakes. Snapping is forgiving BECAUSE missing it costs nothing —
+  // the clip just lands unaligned. Gating displacement on it changed what a miss
+  // costs, from "slightly off" to "the operation refuses". Same shape as §9.6:
+  // a value written for one consumer, relied on by another whose failure is
+  // worse. Now nothing is gated on a threshold at all; every position over a
+  // clip resolves to one of its two boundaries, so there is nothing to hit and
+  // nothing to fall between.
+  const reference = insertReference(s, first.clips, primaryTrackId);
+  let placed = first;
+  let insertAt: Frames = reference ? reference.start : 0;
+
+  if (reference) {
+    const over = clipCoveringFrame(s, reference.trackId, reference.start, first.movingSet);
+    if (over) {
+      // Midpoint, not a threshold. `over.duration / 2` may be a half-frame on an
+      // odd-length clip; the comparison is against the raw edge, and `insertAt`
+      // itself is always one of `over`'s own two integer boundaries.
+      const midpoint = over.start + over.duration / 2;
+      insertAt = reference.start < midpoint ? over.start : over.start + over.duration;
+
+      const adjust = insertAt - reference.start;
+      if (adjust !== 0) {
+        // Re-placed rather than shifted in place, so the resolved position goes
+        // through the SAME start >= 0, lock and kind rules as the raw one. Every
+        // mover takes the identical shift, so a linked pair stays together and
+        // the reference lands exactly on `insertAt`.
+        const again = planPlacement(
+          s,
+          ids,
+          Math.round(deltaFrames) + adjust,
+          deltaTrackIndex,
+          primaryTrackId,
+        );
+        if (!again.ok) return again;
+        placed = again;
+      }
+    }
+  }
+
   const { clips: next, movingSet } = placed;
 
   // Only the lanes the clips actually LAND on (§12.4). A push does not cross
@@ -866,8 +975,8 @@ export function planInsert(
   let pushed: Clip[] | null = null;
 
   for (const [trackId, anchored] of landing) {
-    // Usually one. Sorted so `insertAt` is anchored[0] and the walk below is
-    // ordered.
+    // Usually one. Sorted so the pairwise check below is adjacent-only and the
+    // walk is deterministic.
     if (anchored.length > 1) anchored.sort((a, b) => a.start - b.start);
 
     // Arrivals are FIXED OBSTACLES, not a second stream to merge. That is the
@@ -877,7 +986,6 @@ export function planInsert(
     // occupant clear of the first arrival, then finds the second in its way and
     // refuses a drop that is perfectly legal — which is what a two-clip
     // selection dropped on one lane does.
-    const insertAt = anchored[0].start;
 
     // Arrivals may not overlap EACH OTHER. `planMove` runs the same pairwise
     // check; here it is the one collision the cascade cannot resolve, because
@@ -903,18 +1011,20 @@ export function planInsert(
       const clip = s.clips[id];
       if (!clip) continue;
 
-      // §12.3 cascades "each clip C with C.start >= S". A clip that starts
-      // BEFORE the insertion point is upstream of the edit and never moves — so
-      // if it still reaches past that point, the drop landed inside it rather
-      // than on a seam, and there is no insert to compute. `laneIds` is sorted
-      // and non-overlapping, so this catches the case at the one clip that can
-      // cause it. Refuse in the vocabulary an overlapping drop already uses.
-      if (clip.start < insertAt) {
-        if (clip.start + clip.duration > insertAt) {
-          return { ok: false, reason: 'overlap', blockingClipId: clip.id };
-        }
-        continue;
-      }
+      // There is deliberately NO "the drop landed inside this clip" refusal
+      // here, and its absence is the §12.2 ruling rather than an omission.
+      // Displacement is UNCONDITIONAL: no drop over a clip may refuse for
+      // `overlap`. On the reference lane the case cannot arise at all, because
+      // the half-clip rule above resolved the landing to one of that lane's own
+      // boundaries. On a SECONDARY lane of a linked group it still can — the
+      // pair lands at one shared frame, which is a boundary on the lane the user
+      // aimed and arbitrary on the others — and the answer there is to push the
+      // straddling clip clear, not to refuse the drop. The arrival-clearing loop
+      // below does exactly that with no special case, which is why this ruling
+      // REMOVED code instead of adding it.
+      //
+      // A clip genuinely upstream and clear of every arrival still does not
+      // move: it fails the overlap test below and keeps its own start.
 
       // THE CASCADE (§12.3). A clip yields only as far as it must, so the run
       // stops at the first gap wide enough to absorb the push and nothing beyond
@@ -952,7 +1062,7 @@ export function planInsert(
     }
   }
 
-  return { ok: true, clips: next, pushed: pushed ?? NO_PUSHED };
+  return { ok: true, clips: next, pushed: pushed ?? NO_PUSHED, insertAt };
 }
 
 /**

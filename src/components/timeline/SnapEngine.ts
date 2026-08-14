@@ -45,9 +45,9 @@ function nearestIndex(targets: readonly Frames[], frame: number): number {
  * The caller builds this list as `[start, end]` per moving clip, so a parity
  * rule — even is a start, odd is an end — would have worked and would have been
  * an invisible contract between two files: one `push` in the wrong order in
- * `onLanePointerDown` and every abutting drop would start reporting itself as a
- * start-edge landing, which is CREATIVE §12.2's named failure. Naming the kind
- * costs one property on a list built once per gesture, never per pointermove.
+ * `onLanePointerDown` and every reported edge kind would silently invert, with
+ * nothing in either file looking wrong. Naming the kind costs one property on a
+ * list built once per gesture, never per pointermove.
  */
 export interface SnapEdge {
   frame: Frames;
@@ -62,10 +62,17 @@ export interface SnapOutcome {
   /**
    * Which moving edge landed on `target`. null when nothing snapped.
    *
-   * CREATIVE §12.2: insertion is a START-edge property. A clip whose END snaps
-   * to the next clip's start is an ordinary abutting drop, and treating it as an
-   * insert would make the single most common snap in the application — butting
-   * one clip against the one before it — rearrange the track.
+   * IT NO LONGER GATES INSERTION, and the history is worth keeping because the
+   * mistake is repeatable. §12.2 originally made insertion a start-edge snap, so
+   * this field decided it. That shipped and did not work: the capture window is
+   * SNAP_THRESHOLD_PX — 8px, about ±2 frames — and a mouse reports every 18-23px,
+   * so a human steps over the window rather than narrowly missing it. Insertion
+   * is now decided by the drop overlapping something, with the landing resolved
+   * by the half-clip rule, and it consults neither this field nor any threshold.
+   *
+   * Kept because it is correct, it costs one assignment in a loop that was
+   * already running, and "which edge landed" is a real property of a snap that a
+   * read-out or a future gesture may well want. It currently has no consumer.
    */
   edge: 'start' | 'end' | null;
 }
@@ -75,9 +82,12 @@ export interface SnapOutcome {
  * clip drag, the start and end of every moving clip.
  *
  * `enabled` is `snapEnabled && !altKey`: holding Alt suppresses snapping without
- * changing the persisted preference. That is also what makes CREATIVE §12.2's
- * "snapping off means no insert" structural rather than a second rule: with
- * snapping suppressed this returns `edge: null`, and no caller can find a seam.
+ * changing the persisted preference.
+ *
+ * Snapping is POSITIONING and nothing else. It once also gated insertion, which
+ * meant one control had two behaviours and that turning the magnet off silently
+ * removed a feature — see `SnapOutcome.edge`. Nothing here decides whether an
+ * edit is allowed to happen.
  */
 export function snapTranslation(
   edges: readonly SnapEdge[],
