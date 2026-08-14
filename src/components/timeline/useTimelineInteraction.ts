@@ -39,10 +39,12 @@ import type {
   RefObject,
 } from 'react';
 import type { ClipContextMenuHandle } from './ClipContextMenu';
-import type { ClipId, Frames, TrackId } from '../../types/model';
+import type { Clip, ClipId, Frames, TrackId, TransitionKind } from '../../types/model';
+import type { TrackContextMenuHandle } from './TrackContextMenu';
 import type { StoreState } from '../../state/types';
 import { readStore } from '../../state/store';
 import {
+  planInsert,
   planMove,
   planTrim,
   selectLaneHeight,
@@ -68,6 +70,7 @@ import {
   ZOOM_STEP,
 } from '../../lib/constants';
 import { snapFrame, snapTranslation } from './SnapEngine';
+import type { SnapEdge } from './SnapEngine';
 import {
   contentFrames,
   contentYAtClientY,
@@ -77,6 +80,7 @@ import {
   trackIndexInKind,
 } from './geometry';
 import { useReducedMotion } from '../../lib/useReducedMotion';
+import { refusalLabel } from './refusalLabel';
 
 /** px from a viewport edge at which a drag starts scrolling the timeline. */
 const AUTOSCROLL_EDGE = 32;
@@ -95,6 +99,13 @@ const MS_PER_FRAME_AT_60 = 1000 / 60;
  */
 const SCRUB_VELOCITY_STALE_MS = 80;
 
+/**
+ * The "nothing is pushed" push set. A shared frozen empty array rather than a
+ * fresh `[]` per evaluation: `applyMove` runs at pointer rate and the common
+ * case by far is that no insert is in play.
+ */
+const EMPTY_PUSH: readonly Clip[] = Object.freeze([]);
+
 type BadgeIcon = 'alert' | 'lock' | 'unplug';
 
 const REFUSAL_ICON: Record<MoveFailure, BadgeIcon> = {
@@ -106,33 +117,14 @@ const REFUSAL_ICON: Record<MoveFailure, BadgeIcon> = {
   'no-source': 'unplug',
 };
 
-/** PLAN §3.4's table, in this slice's own words. One sentence, sentence case. */
-function refusalLabel(s: StoreState, reason: MoveFailure, blockingClipId: ClipId | null): string {
-  switch (reason) {
-    case 'overlap': {
-      const name = blockingClipId ? s.clips[blockingClipId]?.name : undefined;
-      return name ? `Blocked by ${name}` : 'Blocked by the next clip';
-    }
-    // A trim can be refused `locked` because a MEMBER of the group is on a locked
-    // track while the clip under the pointer is not, and a bare 'Track is locked'
-    // would name a track the user is not touching (docs/LINKING.md §5.3). The
-    // planner returns a null `blockingClipId` for the named clip's own track and
-    // the member's id for anyone else's, so the two cases are distinguishable here.
-    case 'locked': {
-      const name = blockingClipId ? s.clips[blockingClipId]?.name : undefined;
-      return name ? `${name} is on a locked track` : 'Track is locked';
-    }
-    case 'out-of-range':
-      return 'Start of timeline';
-    case 'no-track':
-      return 'No track for this media';
-    case 'kind-mismatch':
-      return 'Video cannot go on an audio track';
-    case 'no-source':
-      return 'End of source media';
-    default:
-      return 'That move was refused';
-  }
+/**
+ * What the drag is authoring, in words, for the read-out badge. Sentence case.
+ * A dissolve can only be on the 'in' edge (CREATIVE §4.3), so the outgoing case
+ * has no dissolve branch to write.
+ */
+function transitionWord(kind: TransitionKind, edge: 'in' | 'out'): string {
+  if (kind === 'dissolve') return 'Cross dissolve';
+  return edge === 'in' ? 'Fade in' : 'Fade out';
 }
 
 export interface TimelineOverlayRefs {
@@ -146,6 +138,8 @@ export interface TimelineOverlayRefs {
   dragBadgeText: RefObject<HTMLSpanElement>;
   trimBadge: RefObject<HTMLDivElement>;
   dropLine: RefObject<HTMLDivElement>;
+  /** CREATIVE §12.6. The seam an insert will open, on the landing lane. */
+  insertCaret: RefObject<HTMLDivElement>;
 }
 
 interface Common {
@@ -166,7 +160,7 @@ interface MoveGesture extends Common {
   primaryId: ClipId;
   primaryTrackId: TrackId;
   els: HTMLElement[];
-  edges: Frames[];
+  edges: SnapEdge[];
   targets: Frames[];
   moved: boolean;
   /** Applied on pointerup when the press never became a drag. */
@@ -175,6 +169,19 @@ interface MoveGesture extends Common {
   deltaTrack: number;
   /** The engaged snap target, or null. Drives the ~90ms magnetic settle. */
   snapTarget: Frames | null;
+  /**
+   * CREATIVE §12. True when this drop will INSERT rather than move: the ghost's
+   * start edge has snapped to a boundary and the ordinary move was refused for
+   * overlap. It decides which store action `endGesture` commits, so the drop can
+   * never do something the preview did not show.
+   */
+  insert: boolean;
+  /**
+   * The clips currently rendered at a PUSHED position, and the element each one
+   * is translated on. Held so a pointermove that changes the push set can put
+   * back the clips that left it — they are not in `els`, so nothing else would.
+   */
+  pushedEls: Map<ClipId, HTMLElement>;
 }
 
 interface TrimGesture extends Common {
@@ -199,6 +206,43 @@ interface TrimGesture extends Common {
   frame: Frames;
 }
 
+/**
+ * Dragging a clip's transition ramp (CREATIVE §4.4).
+ *
+ * IT CANNOT COLLIDE WITH TRIM, and that is settled by GEOMETRY rather than by
+ * handler order: `.tl-clip-edge` occupies the outer 6 px of each end and
+ * `.tl-clip-transition-handle` starts at 6 px, so the two hit areas are
+ * disjoint and neither can be "nearly" hit. `onLanePointerDown` still resolves
+ * `[data-clip-transition]` FIRST, so if a later stylesheet ever overlapped them
+ * the outcome is a stated decision rather than whichever `closest()` ran first.
+ *
+ * The handle is also inside the clip, so a press on it would otherwise start a
+ * MOVE; returning from this branch is what stops that, exactly as the trim
+ * branch already does.
+ *
+ * `frames` is the authored value, never the built one: the store keeps what the
+ * user asked for and the export clamps it to the handle that exists (§4.3), so
+ * trimming the outgoing clip longer later restores the transition rather than
+ * having silently shortened it forever.
+ */
+interface TransitionGesture extends Common {
+  kind: 'transition';
+  id: ClipId;
+  edge: 'in' | 'out';
+  /** The clip element, for `data-dragging`. */
+  el: HTMLElement;
+  /** The zero-width span the ramp is painted into. Always mounted (Clip.tsx). */
+  rampEl: HTMLElement | null;
+  /** Preserved from whatever is already on the edge; a bare drag authors a fade. */
+  transitionKind: TransitionKind;
+  startX: number;
+  startFrames: Frames;
+  /** ⌊shorter/3⌋ — 0 when the clip is too short to carry one at all. */
+  maxFrames: Frames;
+  moved: boolean;
+  frames: Frames;
+}
+
 interface MarqueeGesture extends Common {
   kind: 'marquee';
   anchorContentX: number;
@@ -215,7 +259,12 @@ interface ScrubGesture extends Common {
   lastTime: number;
 }
 
-type Gesture = MoveGesture | TrimGesture | MarqueeGesture | ScrubGesture;
+type Gesture =
+  | MoveGesture
+  | TrimGesture
+  | TransitionGesture
+  | MarqueeGesture
+  | ScrubGesture;
 
 /** Inset of the keyboard-opened menu from the focused clip's bottom-left corner. */
 const GAP_FROM_CLIP = 8;
@@ -238,6 +287,7 @@ export interface TimelineInteraction {
 export function useTimelineInteraction(
   refs: TimelineOverlayRefs,
   clipMenu: RefObject<ClipContextMenuHandle | null>,
+  trackMenu: RefObject<TrackContextMenuHandle | null>,
 ): TimelineInteraction {
   const [focusedClipId, setFocusedClipId] = useState<ClipId | null>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -280,6 +330,29 @@ export function useTimelineInteraction(
       el.style.transform = `translate3d(${framesToPx(target, s.zoom) - s.scrollX}px, 0, 0)`;
     },
     [refs.snapGuide],
+  );
+
+  /**
+   * The insert caret (CREATIVE §12.6) — the seam the drop will open, drawn on
+   * the lane the clip is landing on so it is unambiguous which track cascades.
+   * `null` hides it.
+   */
+  const showInsertCaret = useCallback(
+    (target: Frames | null, trackId: TrackId | undefined): void => {
+      const el = refs.insertCaret.current;
+      if (!el) return;
+      if (target === null || trackId === undefined) {
+        el.hidden = true;
+        return;
+      }
+      const s = readStore();
+      el.hidden = false;
+      el.style.height = `${s.tracks[trackId]?.height ?? 0}px`;
+      el.style.transform = `translate3d(${framesToPx(target, s.zoom) - s.scrollX}px, ${
+        selectLaneTop(s, trackId) - s.scrollY
+      }px, 0)`;
+    },
+    [refs.insertCaret],
   );
 
   const showRefusal = useCallback(
@@ -345,6 +418,51 @@ export function useTimelineInteraction(
 
   /* -------------------------------------------------------- gesture apply */
 
+  /**
+   * Renders the push set at its pushed position — CREATIVE §12.6's "the clips
+   * actually move". A `translateX` on elements that are already mounted, so a
+   * cascade of any length costs no layout and allocates no DOM at pointer rate.
+   *
+   * The displacement is read from `planInsert`'s own output, never recomputed:
+   * `clip.start` in `pushed` is where that clip WILL be, so the transform is the
+   * difference against where it is now. Deriving it here would be the second
+   * implementation §12.7 forbids.
+   *
+   * Elements that LEAVE the push set between two pointermoves are put back
+   * first. They are not in `g.els`, so nothing else in this file would ever
+   * clear them, and a clip left translated after the cascade shortened would be
+   * a clip drawn somewhere it is not.
+   */
+  const applyPushPreview = useCallback(
+    (g: MoveGesture, s: StoreState, pushed: readonly Clip[]): void => {
+      const next = new Map<ClipId, HTMLElement>();
+
+      for (const clip of pushed) {
+        const el =
+          g.pushedEls.get(clip.id) ??
+          refs.laneContent.current?.querySelector<HTMLElement>(`[data-clip-id="${clip.id}"]`);
+        // A pushed clip scrolled out of the lane has no element. That is not a
+        // reason to abort anything: the commit still moves it, exactly as a
+        // linked trim member with no element is still trimmed.
+        if (!el) continue;
+        const current = s.clips[clip.id];
+        if (!current) continue;
+        next.set(clip.id, el);
+        el.dataset.pushed = 'true';
+        el.style.transform = `translate3d(${framesToPx(clip.start - current.start, s.zoom)}px, 0, 0)`;
+      }
+
+      for (const [id, el] of g.pushedEls) {
+        if (next.has(id)) continue;
+        delete el.dataset.pushed;
+        el.style.transform = '';
+      }
+
+      g.pushedEls = next;
+    },
+    [refs.laneContent],
+  );
+
   const applyMove = useCallback(
     (g: MoveGesture): void => {
       const s = readStore();
@@ -373,7 +491,51 @@ export function useTimelineInteraction(
       let guide = snapped.target;
 
       const first = planMove(s, g.ids, delta, track, g.primaryTrackId);
-      if (!first.ok) {
+
+      /* ------------------------------------------------ insert (CREATIVE §12)
+
+         Attempted ONLY when the ordinary move was refused for OVERLAP and the
+         ghost's START edge is the one that snapped. Both halves matter:
+
+         · Overlap, because §12 adds a third outcome to a set of two rather than
+           changing one. A drop that already fits is an ordinary move, and the
+           §12.3 example — aiming at a seam with three seconds of gap after it —
+           lands here, fits, and pushes nothing, which is the stated result.
+         · Start edge, because §12.2 makes insertion a start-edge property. The
+           most common snap in the whole application is butting a clip's start
+           against the previous clip's END, and an end-edge landing must stay the
+           abut it has always been.
+
+         `kindRefusal` is checked too: a video clip over an audio lane is refused
+         before geometry is consulted at all, and inserting it there would be
+         answering a question the user did not ask.
+
+         The plan comes from the STORE, never from arithmetic here. `planInsert`
+         is the same function `insertClips` runs, so the ghost below and the drop
+         in `endGesture` cannot disagree — which is the failure §12.7 exists to
+         prevent. */
+      let pushed: readonly Clip[] = EMPTY_PUSH;
+      let inserting = false;
+      if (
+        !first.ok &&
+        first.reason === 'overlap' &&
+        kindRefusal === null &&
+        snapped.edge === 'start' &&
+        guide !== null
+      ) {
+        const attempt = planInsert(s, g.ids, delta, track, g.primaryTrackId);
+        if (attempt.ok) {
+          inserting = true;
+          pushed = attempt.pushed;
+          // An insert is a legal outcome, not a refused one: clear the refusal
+          // the failed `planMove` was about to raise, and keep the snapped delta
+          // rather than clamping back to the last non-overlapping frame.
+          reason = null;
+          blocking = null;
+        }
+      }
+
+      if (!inserting && !first.ok) {
         reason = reason ?? first.reason;
         blocking = first.blockingClipId;
         // Fall back to the origin lane, then to the last legal frame on it.
@@ -390,6 +552,9 @@ export function useTimelineInteraction(
       g.delta = delta;
       g.deltaTrack = track;
       g.snapTarget = guide;
+      g.insert = inserting;
+
+      applyPushPreview(g, s, pushed);
 
       // The magnet settles over --dur-snap while a target is engaged, and lets
       // go instantly when it disengages. Reduced motion lands it immediately.
@@ -415,7 +580,21 @@ export function useTimelineInteraction(
         else delete el.dataset.refused;
       }
 
-      showSnapGuide(guide);
+      // The caret REPLACES the snap guide while inserting rather than joining
+      // it. Both mark the same frame, so drawing both puts a 1px accent line
+      // underneath a 2px caret at the same x — two marks for one fact, and the
+      // quieter one is the one that says less. The caret is also the only signal
+      // that survives §12.6's hard case, where the cascade is absorbed at once
+      // and no clip visibly shifts.
+      if (inserting && guide !== null) {
+        const landingTrackId =
+          track !== 0 ? trackAtKindOffset(s, g.primaryTrackId, track) : g.primaryTrackId;
+        showInsertCaret(guide, landingTrackId ?? g.primaryTrackId);
+        showSnapGuide(null);
+      } else {
+        showInsertCaret(null, undefined);
+        showSnapGuide(guide);
+      }
 
       let barFrame: Frames | null = null;
       let laneTop: number | null = null;
@@ -430,7 +609,7 @@ export function useTimelineInteraction(
       showRefusal(reason, blocking, barFrame, laneTop);
       moveBadge(g.lastClientX, g.lastClientY, g.rect);
     },
-    [moveBadge, showRefusal, showSnapGuide],
+    [applyPushPreview, moveBadge, showInsertCaret, showRefusal, showSnapGuide],
   );
 
   const applyTrim = useCallback(
@@ -516,6 +695,51 @@ export function useTimelineInteraction(
     [moveBadge, refs.trimBadge, showRefusal, showSnapGuide],
   );
 
+  /**
+   * NO SNAPPING, deliberately. Every other gesture here resolves to a POSITION
+   * on the timeline, and the snap targets are positions — clip edges, markers,
+   * the in and out points. A transition length is a DURATION, and snapping one
+   * to a distant clip's start would set it to whatever arbitrary number of
+   * frames happened to lie under the pointer.
+   *
+   * There is also no refusal path: the value is clamped to [0, max] as it is
+   * dragged, so there is no illegal length to refuse. Dragging to zero is the
+   * removal gesture and the badge says so in words.
+   */
+  const applyTransition = useCallback(
+    (g: TransitionGesture): void => {
+      const s = readStore();
+      const clip = s.clips[g.id];
+      if (!clip) return;
+
+      const startContentX = g.startX - g.rect.left + g.startScrollX;
+      const nowContentX = g.lastClientX - g.rect.left + s.scrollX;
+      // Inward is positive on both ends: rightward lengthens a head ramp,
+      // leftward lengthens a tail one. The alternative — signed by screen
+      // direction — would make the out handle run backwards under the hand.
+      const inward = g.edge === 'in' ? 1 : -1;
+      const travel = pxToFramesExact(nowContentX - startContentX, s.zoom) * inward;
+      const frames = Math.min(g.maxFrames, Math.max(0, Math.round(g.startFrames + travel)));
+      g.frames = frames;
+
+      if (g.rampEl) g.rampEl.style.setProperty('--tl-ramp-w', `${framesToPx(frames, s.zoom)}px`);
+
+      const badge = refs.trimBadge.current;
+      if (badge) {
+        badge.hidden = false;
+        badge.textContent =
+          frames === 0
+            ? 'No transition'
+            : `${transitionWord(g.transitionKind, g.edge)} · ${framesToDuration(frames, s.fps)} · ${frames}f`;
+        const x = framesToPx(g.edge === 'in' ? clip.start : clipEnd(clip), s.zoom) - s.scrollX;
+        const laneTop = selectLaneTop(s, clip.trackId) - s.scrollY;
+        badge.style.transform = `translate3d(${Math.max(2, x + 6)}px, ${Math.max(2, laneTop + 2)}px, 0)`;
+      }
+      moveBadge(g.lastClientX, g.lastClientY, g.rect);
+    },
+    [moveBadge, refs.trimBadge],
+  );
+
   const applyMarquee = useCallback(
     (g: MarqueeGesture): void => {
       const s = readStore();
@@ -580,10 +804,11 @@ export function useTimelineInteraction(
     (g: Gesture): void => {
       if (g.kind === 'move') applyMove(g);
       else if (g.kind === 'trim') applyTrim(g);
+      else if (g.kind === 'transition') applyTransition(g);
       else if (g.kind === 'marquee') applyMarquee(g);
       else applyScrub(g);
     },
-    [applyMarquee, applyMove, applyScrub, applyTrim],
+    [applyMarquee, applyMove, applyScrub, applyTransition, applyTrim],
   );
 
   /* ----------------------------------------------------------- autoscroll */
@@ -646,6 +871,18 @@ export function useTimelineInteraction(
   const clearDragDecorations = useCallback(
     (g: Gesture, settle: boolean): void => {
       if (g.kind === 'move') {
+        // The push set first, and unconditionally. These elements are NOT in
+        // `els`, and the store has already been written by the time we get here
+        // on a commit — so a pushed clip's real geometry is now its pushed
+        // geometry, and any surviving transform would double the displacement.
+        // On an abort the store was never touched and clearing simply puts the
+        // clip back, which is §12.6's "aborting restores every pushed clip".
+        for (const el of g.pushedEls.values()) {
+          delete el.dataset.pushed;
+          el.style.transform = '';
+        }
+        g.pushedEls.clear();
+
         for (const el of g.els) {
           delete el.dataset.snapping;
           if (settle && !reducedRef.current) {
@@ -680,14 +917,27 @@ export function useTimelineInteraction(
           delete member.el.dataset.refused;
         }
         delete g.el.dataset.dragging;
+      } else if (g.kind === 'transition') {
+        // REWRITTEN from the store, not cleared, for the reason the trim path is:
+        // React owns `--tl-ramp-w` through the ramp span's style prop, and when
+        // the committed value equals the one already rendered React writes
+        // nothing — so a blanked or stale custom property would survive with no
+        // render to correct it.
+        const s = readStore();
+        const clip = s.clips[g.id];
+        const authored =
+          (g.edge === 'in' ? clip?.transitionIn?.frames : clip?.transitionOut?.frames) ?? 0;
+        g.rampEl?.style.setProperty('--tl-ramp-w', `${framesToPx(authored, s.zoom)}px`);
+        delete g.el.dataset.dragging;
       }
       showSnapGuide(null);
       showRefusal(null, null, null, null);
       hide(refs.marquee);
       hide(refs.trimBadge);
       hide(refs.dropLine);
+      hide(refs.insertCaret);
     },
-    [hide, refs.dropLine, refs.marquee, refs.trimBadge, showRefusal, showSnapGuide],
+    [hide, refs.dropLine, refs.insertCaret, refs.marquee, refs.trimBadge, showRefusal, showSnapGuide],
   );
 
   /* ------------------------------------------------------ scrub momentum
@@ -731,14 +981,32 @@ export function useTimelineInteraction(
 
       const store = readStore();
       if (g.kind === 'move' && g.moved) {
-        const { ids, delta, deltaTrack, primaryTrackId } = g;
-        const worthwhile = commit && (delta !== 0 || deltaTrack !== 0);
+        const { ids, delta, deltaTrack, primaryTrackId, insert } = g;
+        // An INSERT with a zero delta is still worthwhile — it rearranges the
+        // track even though the dragged clip has not itself moved. `moveClips`
+        // with a zero delta is the no-op this guard was written for.
+        //
+        // This relies on an invariant, stated here because it is what keeps the
+        // relaxation from minting an EMPTY undo entry: `insert` is only ever set
+        // when `planMove` refused for OVERLAP, an overlap means at least one
+        // clip is in the way, and `planInsert` must therefore push at least one
+        // clip. So `insertClips` can never take its own no-op early-return under
+        // this branch, and the `commitHistory` below always closes a
+        // transaction that really changed something. Widening the condition that
+        // sets `insert` means revisiting this.
+        const worthwhile = commit && (insert || delta !== 0 || deltaTrack !== 0);
         flushSync(() => {
           if (!worthwhile) {
             readStore().abortHistory();
             return;
           }
-          const result = readStore().moveClips(ids, delta, deltaTrack, primaryTrackId);
+          // The SAME predicate the ghost used, carried on the gesture record
+          // rather than recomputed here — recomputing it would re-read a store
+          // that may have changed under a slow pointerup, and the drop would
+          // then do something the preview never showed (CREATIVE §12.7).
+          const result = insert
+            ? readStore().insertClips(ids, delta, deltaTrack, primaryTrackId)
+            : readStore().moveClips(ids, delta, deltaTrack, primaryTrackId);
           if (result.ok) readStore().commitHistory();
           else readStore().abortHistory();
         });
@@ -756,6 +1024,29 @@ export function useTimelineInteraction(
             const result = readStore().trimClip(id, edge, frame);
             if (result.ok) readStore().commitHistory();
             else readStore().abortHistory();
+          });
+        } else if (g.historyOpen) {
+          store.commitHistory();
+        }
+      } else if (g.kind === 'transition') {
+        if (g.moved) {
+          const { id, edge, frames, transitionKind } = g;
+          // `flushSync` for the same reason move and trim need it: the
+          // authoritative geometry has to have landed before
+          // `clearDragDecorations` reads it back out of the store.
+          flushSync(() => {
+            if (!commit) {
+              readStore().abortHistory();
+              return;
+            }
+            // Zero is REMOVAL, not a zero-length transition: `Transition.frames`
+            // is >= 1 by declaration, so there is no such thing to store.
+            readStore().setClipTransition(
+              id,
+              edge,
+              frames >= 1 ? { kind: transitionKind, frames } : null,
+            );
+            readStore().commitHistory();
           });
         } else if (g.historyOpen) {
           store.commitHistory();
@@ -790,7 +1081,8 @@ export function useTimelineInteraction(
       // under the cursor. A move reporting no buttons IS that lost release, so
       // the gesture ends where the pointer actually is.
       if (event.buttons === 0) {
-        const underway = g.kind === 'move' || g.kind === 'trim' ? g.moved : true;
+        const underway =
+          g.kind === 'move' || g.kind === 'trim' || g.kind === 'transition' ? g.moved : true;
         if (underway) applyGesture(g);
         endGesture(true);
         return;
@@ -811,6 +1103,16 @@ export function useTimelineInteraction(
         if (Math.abs(event.clientX - g.startX) <= 1) return;
         g.moved = true;
         readStore().beginHistory('Trim clip');
+        g.historyOpen = true;
+        g.el.dataset.dragging = 'true';
+      }
+      // Same 1px threshold the trim uses, and for the same reason: this is a
+      // horizontal-only gesture, so a vertical tremor must not open a history
+      // transaction, but a single deliberate pixel must.
+      if (g.kind === 'transition' && !g.moved) {
+        if (Math.abs(event.clientX - g.startX) <= 1) return;
+        g.moved = true;
+        readStore().beginHistory('Set transition');
         g.historyOpen = true;
         g.el.dataset.dragging = 'true';
       }
@@ -915,6 +1217,7 @@ export function useTimelineInteraction(
       stopMomentum();
 
       const target = event.target as HTMLElement;
+      const transitionEl = target.closest<HTMLElement>('[data-clip-transition]');
       const edgeEl = target.closest<HTMLElement>('[data-clip-edge]');
       const clipEl = target.closest<HTMLElement>('[data-clip-id]');
       const rect = viewport.getBoundingClientRect();
@@ -930,6 +1233,64 @@ export function useTimelineInteraction(
         startScrollY: s.scrollY,
         historyOpen: false,
       };
+
+      /* --- transition ---------------------------------------------------- */
+      // FIRST, before trim and before move. The three hit areas are disjoint by
+      // geometry (see TransitionGesture), so this ordering never actually fires
+      // ahead of a trim — it is here so that the precedence is a decision in the
+      // source rather than an accident of which `closest()` happened to match.
+      if (transitionEl && clipEl) {
+        const id = clipEl.dataset.clipId as ClipId;
+        const clip = s.clips[id];
+        if (!clip) return;
+        const edge = (transitionEl.dataset.edge as 'in' | 'out') ?? 'in';
+        focusClip(id);
+        if (!s.selection.has(id)) s.select(id, 'replace');
+        anchor.current = id;
+
+        // A bare drag authors a FADE; an edge that already carries a dissolve
+        // keeps it. Changing the kind is the context menu's job — a 10px corner
+        // cannot express "and make it a dissolve", and silently demoting one to
+        // a fade because the user adjusted its length would lose the crossing.
+        const existing = edge === 'in' ? clip.transitionIn : clip.transitionOut;
+        const transitionKind: TransitionKind = existing?.kind ?? 'fade';
+
+        // A third of the SHORTER clip (CREATIVE §4.4). For a fade that is the
+        // clip itself; for a dissolve it is the lesser of it and the outgoing
+        // clip, because the ramp has to fit inside both.
+        let shorter = clip.duration;
+        if (transitionKind === 'dissolve') {
+          const ids = s.clipsByTrack[clip.trackId] ?? [];
+          const at = ids.indexOf(id);
+          const previous = at > 0 ? s.clips[ids[at - 1]] : undefined;
+          if (previous) shorter = Math.min(shorter, previous.duration);
+        }
+        // Never below what is already stored: a value authored when the clip was
+        // longer is the user's, and a drag must be able to shorten it by hand
+        // rather than have the press itself silently clamp it.
+        const existingFrames = existing?.frames ?? 0;
+        const maxFrames = Math.max(existingFrames, Math.floor(shorter / 3));
+
+        gesture.current = {
+          ...common,
+          kind: 'transition',
+          id,
+          edge,
+          el: clipEl,
+          rampEl: clipEl.querySelector<HTMLElement>(`.tl-clip-ramp[data-edge="${edge}"]`),
+          transitionKind,
+          startX: event.clientX,
+          startFrames: existingFrames,
+          maxFrames,
+          moved: false,
+          frames: existingFrames,
+        };
+        // AFTER the gesture record exists, never before — THE CAPTURE RULE at the
+        // top of this file. `setPointerCapture` throws on an id it cannot capture,
+        // and a throw above this line would cost the whole press.
+        capturePointer(viewport, event.pointerId);
+        return;
+      }
 
       /* --- trim ---------------------------------------------------------- */
       if (edgeEl && clipEl) {
@@ -999,14 +1360,18 @@ export function useTimelineInteraction(
         const ids = after.selection.has(id) ? [...after.selection] : [id];
         const movingSet = new Set(ids);
         const els: HTMLElement[] = [];
-        const edges: Frames[] = [];
+        const edges: SnapEdge[] = [];
         for (const clipId of ids) {
           const el = refs.laneContent.current?.querySelector<HTMLElement>(
             `[data-clip-id="${clipId}"]`,
           );
           if (el) els.push(el);
           const c = after.clips[clipId];
-          if (c) edges.push(c.start, clipEnd(c));
+          // Start BEFORE end, per clip, unchanged — `snapTranslation`'s tie
+          // resolution depends on this order (see its comment), and the kinds
+          // are now named here so the two files cannot disagree about which is
+          // which.
+          if (c) edges.push({ frame: c.start, kind: 'start' }, { frame: clipEnd(c), kind: 'end' });
         }
 
         gesture.current = {
@@ -1025,7 +1390,11 @@ export function useTimelineInteraction(
           delta: 0,
           deltaTrack: 0,
           snapTarget: null,
+          insert: false,
+          pushedEls: new Map(),
         };
+        // AFTER the record exists — THE CAPTURE RULE. Unchanged by §12; the
+        // insert path adds no earlier exit and takes no capture of its own.
         capturePointer(viewport, event.pointerId);
         return;
       }
@@ -1062,9 +1431,28 @@ export function useTimelineInteraction(
   const onLaneContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>): void => {
       const clipEl = (event.target as HTMLElement).closest<HTMLElement>('[data-clip-id]');
-      if (!clipEl) return;
-      const id = clipEl.dataset.clipId as ClipId;
       const s = readStore();
+
+      /* --- empty lane space ---------------------------------------------
+         The TRACK menu, not a second clip menu: the questions worth asking
+         about a stretch of empty lane are all about the track it belongs to —
+         put a title here, mute it, lock it, set its level. It carries the frame
+         under the pointer, so `Add title` lands where the user pressed rather
+         than at the playhead. */
+      if (!clipEl) {
+        const viewport = refs.laneViewport.current;
+        if (!viewport) return;
+        const rect = viewport.getBoundingClientRect();
+        const track = selectTrackAtY(s, contentYAtClientY(event.clientY, rect, s.scrollY));
+        if (!track) return;
+        event.preventDefault();
+        const frame = frameAtClientX(event.clientX, rect, s.scrollX, s.zoom);
+        const snapped = snapFrame(frame, selectSnapTargets(s), s.zoom, s.snapEnabled);
+        trackMenu.current?.openAt(track.id, snapped.frame, event.clientY, event.clientX);
+        return;
+      }
+
+      const id = clipEl.dataset.clipId as ClipId;
       if (!s.clips[id]) return;
       event.preventDefault();
       if (!s.selection.has(id)) s.select(id, 'replace');
@@ -1073,7 +1461,7 @@ export function useTimelineInteraction(
       focusClip(id);
       clipMenu.current?.openAt(id, event.clientY, event.clientX);
     },
-    [clipMenu, focusClip],
+    [clipMenu, focusClip, refs.laneViewport, trackMenu],
   );
 
   const beginScrub = useCallback(
@@ -1185,6 +1573,13 @@ export function useTimelineInteraction(
         );
         return;
       }
+
+      // `edit.addTitle` used to be matched HERE, by hand. It has moved to
+      // `useRegionShortcuts` on `.tl-root`: matching it in this handler meant it
+      // fired only while focus was inside the lane viewport, so `T` on a track
+      // head or the toolbar did nothing despite the row being scoped to the
+      // whole timeline — and the key comparison here duplicated a binding the
+      // registry already owned. Nothing region-scoped belongs in this handler.
 
       // PROVISIONAL BINDING — see the final report's §0.2 request for
       // `nav.clipBack` / `nav.clipForward`. Handled locally only until the

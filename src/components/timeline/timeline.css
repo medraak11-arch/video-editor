@@ -188,11 +188,15 @@
   will-change: transform;
 }
 
+/* `grid-auto-rows`, not a fixed `grid-template-rows: auto auto`: the head is two
+   rows on a dense track and three once the fader appears (CREATIVE §1.4), and a
+   template that named two would have left the fader in an implicit row with the
+   gap applied twice. Implicit rows exist only for the children that are there. */
 .tl-head {
   position: absolute;
   inset-inline: 0;
   display: grid;
-  grid-template-rows: auto auto;
+  grid-auto-rows: auto;
   align-content: center;
   justify-items: center;
   row-gap: var(--space-hair);
@@ -203,6 +207,14 @@
 }
 
 .tl-head[data-dense='true'] {
+  row-gap: 0;
+}
+
+/* Between DENSE_HEIGHT and ROOMY_HEIGHT the fader is shown and the budget is
+   spent entirely on the three rows: an 11px label, a 24px toggle and the fader
+   already fill a 48px lane. The gap is what gives way, because it is the only
+   thing there that carries no information. */
+.tl-head[data-compact='true'] {
   row-gap: 0;
 }
 
@@ -247,6 +259,19 @@
   display: flex;
   align-items: center;
   gap: 0;
+}
+
+/* THE TRACK FADER (CREATIVE §1.4). 88px of head less its 4px inline padding
+   leaves 80px, and the Fader is 56px wide, so it is centred with room either
+   side rather than pressed against the column edges. `min-width: 0` so a Fader
+   that ever grows an intrinsic minimum cannot push the head wider than its
+   grid column and desynchronise the head list from the lanes beside it. */
+.tl-head-fader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
 }
 
 /* =================================================================== lanes === */
@@ -436,6 +461,26 @@
   transition: transform var(--dur-feedback) var(--ease-out);
 }
 
+/* THE PUSH PREVIEW — CREATIVE §12.6. A clip being displaced by an insert that
+   has not been committed yet.
+
+   The transform is written by the drag layer from `planInsert`'s own output.
+   This rule adds only the easing, and that split is the whole reduced-motion
+   story: §12.6 says the displacement is a POSITION, not an animation — it is
+   the information the preview exists to carry — so reduced motion must remove
+   the easing WITHOUT removing the movement. It does, for free and with no
+   second code path: `--dur-snap` collapses to 1ms under
+   `prefers-reduced-motion` (base.css), the clip lands immediately, and it still
+   lands in the pushed place. This is the same mechanism `.tl-clip[data-snapping]`
+   above already relies on.
+
+   Deliberately NOT a lightness or opacity change. A pushed clip is not in a
+   state — it is exactly what it will be a moment from now, and dimming it would
+   say "provisional" about the one thing in the gesture that is certain. */
+.tl-clip[data-pushed='true'] {
+  transition: transform var(--dur-snap) var(--ease-out);
+}
+
 /* The magnetic settle, ~90ms. Under prefers-reduced-motion the token collapses
    to 1ms AND the drag layer stops setting this attribute at all: snapping still
    happens, it simply lands instantly. */
@@ -459,7 +504,13 @@
   border-start-end-radius: var(--radius-clip);
 }
 
+/* `position: relative` and a z-index EQUAL to the ramp's, not above it: the two
+   are siblings in one stacking context and DOM order settles which paints on
+   top (Clip.tsx mounts the ramps first, so the body wins). Two different
+   literals here would be two things to keep in step; one shared token is none. */
 .tl-clip-body {
+  position: relative;
+  z-index: var(--z-clip);
   flex: 1 1 auto;
   display: flex;
   align-items: center;
@@ -504,6 +555,243 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-ink);
+}
+
+/* ============================================ transitions (CREATIVE §4.4) ===
+
+   THE RAMP READS WITHOUT HUE, and that is the requirement it was designed
+   against rather than a property it happens to have. It carries no colour of
+   its own at all: it is a WEDGE (shape) that is full height where the clip is
+   silent and black and tapers to nothing where the clip is at full strength, a
+   LIGHTNESS step from the scrim that fills it, and a 2px diagonal RULE along
+   its hypotenuse. Under simulated deuteranopia every one of those three is
+   unchanged, because none of them is a hue.
+
+   The wedge points the way the picture goes: full at the head of a fade-in and
+   full at the tail of a fade-out, so the two are mirror images and a glance at
+   the shape says which end of the clip is being ramped.
+
+   The hypotenuse is drawn by a gradient rather than by a border because a
+   border cannot be diagonal. `to top right` and `to bottom right` are the two
+   corner keywords whose 50% iso-line passes exactly through the OTHER two
+   corners of the box, whatever its aspect — so the rule tracks the wedge edge
+   at every clip width and every zoom with no arithmetic anywhere.
+
+   WHY that holds, because the conclusion alone invites a "simplification" that
+   breaks it: for a corner keyword, CSS angles the gradient LINE so that the
+   perpendicular through the box's centre passes through the two NEIGHBOURING
+   corners (the spec's "magic corner" rule). Every colour stop lies on such a
+   perpendicular, so the 50% stop IS the box's other diagonal — by construction,
+   re-derived from the box's own dimensions every time it is laid out.
+
+   DO NOT replace these with a fixed angle. `45deg` is the same line ONLY on a
+   square box. A clip is almost never square, and the wider it gets the further
+   a fixed-angle stop swings away from the wedge it is supposed to trace — so
+   the rule would drift off the diagonal exactly as the clip becomes big enough
+   for anyone to notice. */
+
+.tl-clip-ramp {
+  /* Written by Clip.tsx on render and by the drag layer on pointermove. 0 is
+     "no transition", and a 0-width box paints none of the three signals. */
+  --tl-ramp-w: 0px;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--tl-ramp-w);
+  /* A ramp longer than half the clip would meet the one at the other end and
+     the two wedges would read as one solid block. The store clamps the authored
+     value to a third of the clip, so this only ever bites while a stale value
+     from a clip that has since been trimmed is on screen. */
+  max-width: 50%;
+  overflow: clip;
+  border-radius: var(--radius-clip);
+  pointer-events: none;
+  z-index: var(--z-clip);
+}
+
+.tl-clip-ramp[data-edge='in'] {
+  left: 0;
+}
+
+.tl-clip-ramp[data-edge='out'] {
+  right: 0;
+}
+
+/* The wedge. --scrim is the token for "this is being covered", which is exactly
+   what a fade to black is, and it is theme-invariant for the same reason the
+   frame matte is: it stands for the black the file will actually contain. */
+.tl-clip-ramp::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+}
+
+.tl-clip-ramp[data-edge='in']::before {
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+}
+
+.tl-clip-ramp[data-edge='out']::before {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+/* The hypotenuse. --text-ink rather than --border-structural, measured the same
+   way the link rail was: structural lands under the 3:1 non-text floor on
+   --surface-raised-hover, which is where hover, focus AND selected all put the
+   clip — that is, on the clips actually being looked at. */
+.tl-clip-ramp::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.tl-clip-ramp[data-edge='in']::after {
+  background-image: linear-gradient(
+    to top right,
+    transparent calc(50% - 1px),
+    var(--text-ink) calc(50% - 1px),
+    var(--text-ink) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
+.tl-clip-ramp[data-edge='out']::after {
+  background-image: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    var(--text-ink) calc(50% - 1px),
+    var(--text-ink) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
+/* A CROSS-DISSOLVE gets the SECOND diagonal, which is the crossing glyph every
+   NLE prints on the same control — so `fade` and `dissolve` differ by a mark,
+   not by a colour, and the difference survives every colour-vision deficiency.
+   A dissolve only ever sits on the 'in' edge (CREATIVE §4.3), so there is no
+   outgoing rule to write and its absence is not an omission. */
+.tl-clip-ramp[data-kind='dissolve'][data-edge='in']::after {
+  background-image:
+    linear-gradient(
+      to top right,
+      transparent calc(50% - 1px),
+      var(--text-ink) calc(50% - 1px),
+      var(--text-ink) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    ),
+    linear-gradient(
+      to bottom right,
+      transparent calc(50% - 1px),
+      var(--text-ink) calc(50% - 1px),
+      var(--text-ink) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    );
+}
+
+/* THE HANDLE. A 10px corner target inset by exactly the trim edge's own 6px, so
+   the two hit areas ABUT and never overlap — the transition gesture and the
+   trim gesture are separated by geometry, not by a handler running first.
+
+   Transparent at rest like the trim edge, and for the same reason: forty clips
+   each showing two permanent corner glyphs is the wall-of-controls
+   anti-reference in miniature. The cursor is the affordance until the clip is
+   hovered, focused or selected, at which point the glyph appears on the clip
+   the user is actually addressing. */
+.tl-clip-transition-handle {
+  position: absolute;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  cursor: ew-resize;
+  z-index: var(--z-clip);
+}
+
+.tl-clip-transition-handle[data-edge='in'] {
+  left: var(--space-sm);
+}
+
+.tl-clip-transition-handle[data-edge='out'] {
+  right: var(--space-sm);
+}
+
+/* The glyph is a small right triangle pointing the way the drag goes — the same
+   wedge the gesture will grow, at handle size. */
+.tl-clip-transition-handle::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  background: var(--text-ink);
+  opacity: 0;
+  transition: opacity var(--dur-feedback) var(--ease-out);
+}
+
+.tl-clip-transition-handle[data-edge='in']::after {
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+.tl-clip-transition-handle[data-edge='out']::after {
+  clip-path: polygon(100% 0, 100% 100%, 0 0);
+}
+
+.tl-clip:hover .tl-clip-transition-handle::after,
+.tl-clip:focus-visible .tl-clip-transition-handle::after,
+.tl-clip[data-selected='true'] .tl-clip-transition-handle::after {
+  opacity: 0.55;
+}
+
+.tl-clip-transition-handle:hover::after {
+  opacity: 1;
+}
+
+/* No :focus-visible rule on the handle, deliberately, and for the reason stated
+   under .tl-clip-edge below: it is an aria-hidden span with no tabindex, and the
+   keyboard route to a transition is the clip context menu, which every focused
+   clip opens with ContextMenu or Shift+F10. A focus style on an element that can
+   never take focus is a rule that lies about the seven-state table. */
+
+/* ============================================== title clips (CREATIVE §5) ===
+
+   A title has no media and no thumbnail, and the ONE thing it must never look
+   like is broken media. Offline is carried by a danger border, a 45° stripe and
+   an Unplug glyph; a title deliberately shares none of the three. It reads as
+   generated content through a lattice texture (a different KIND of pattern from
+   every state stripe — see --tl-texture-generated), a Type glyph that names what
+   it contains rather than what it lacks, and its own text as its label. */
+
+.tl-clip[data-kind='title'] {
+  /* A dashed boundary rather than the solid structural one: dashed is the
+     universal "this is drawn, not captured", it is a SHAPE difference, and it
+     leaves the danger border free to mean only what it already means. */
+  border-style: dashed;
+}
+
+/* THE GENERATED LATTICE — two crossing rules, where all four of PLAN §7.6's
+   state textures are single-direction stripes. Crossing them changes the KIND
+   of the pattern rather than adding a fifth angle to a table that closes at
+   four, which is what keeps a title from being mistaken for `locked` at a
+   glance and what lets it stack legibly on top of any of them.
+
+   It lives on its OWN element and in this file rather than as a token read from
+   Clip.tsx, for two reasons that point the same way. It is not a theme value:
+   the state textures are in tokens.css because a theme's --texture-tint is the
+   only thing that varies in them, and this pattern is geometry that no theme
+   touches. And the inline `background-image` Clip.tsx writes for the state
+   textures REPLACES whatever the stylesheet set, so as a background on .tl-clip
+   it would have been erased the moment the title landed on a locked track — the
+   one case where both marks have to be readable at once. As a separate layer
+   they simply stack.
+
+   No z-index: it is the bottom positioned layer, so the ramps and the clip body
+   (both --z-clip) paint over it, and its own tiling needs no background-size.
+   No colour literal — the tint is the one all five patterns share. */
+.tl-clip-generated {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-clip);
+  background-image:
+    repeating-linear-gradient(45deg, transparent 0 5px, var(--texture-tint) 5px 6px),
+    repeating-linear-gradient(135deg, transparent 0 5px, var(--texture-tint) 5px 6px);
+  pointer-events: none;
 }
 
 /* Trim handles. Transparent at rest; the cursor is the affordance until hover. */
@@ -690,16 +978,75 @@
   z-index: var(--z-marquee);
 }
 
-/* -------------------------------------------------------- context menu anchor
-   The clip context menu opens from a zero-size button parked at the pointer, so
-   one shared popover can open where the user clicked. `display: contents` keeps
-   the host out of the lane's own layout entirely. */
+/* THE INSERT CARET — CREATIVE §12.6.
 
-.tl-clip-menu-host {
+   It marks the seam a drop will open, and it has to be distinguishable at a
+   glance from the three other vertical marks that live on this plane: the snap
+   guide (1px accent), the drop line (2px ink) and the refusal bar (2px danger).
+   Hue cannot do that work — the drop line is already ink — so the caret is
+   given a SHAPE no other mark has: a stem with a wedge at each end, which is
+   the insertion mark every NLE and every text editor draws. That shape is also
+   what makes it read as "something opens here" rather than "something aligns
+   here", which is exactly the difference between an insert and a snap.
+
+   Unlike the other three it is bounded to ONE LANE rather than spanning the
+   whole lane area, because the push is per-track (§12.4). A full-height line
+   would claim the cascade reaches every track, which is the one thing §12.4
+   says it must not do. Height and vertical offset are written by the drag
+   layer. */
+.tl-insert-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text-ink);
+  pointer-events: none;
+  z-index: var(--z-marquee);
+  will-change: transform;
+}
+
+/* The two wedges. `inline-size` is deliberately wider than the stem and centred
+   on it, so the caret reads as a mark placed BETWEEN two clips rather than as a
+   border belonging to either one. */
+.tl-insert-caret::before,
+.tl-insert-caret::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  width: 8px;
+  height: 4px;
+  margin-left: -4px;
+  background: var(--text-ink);
+}
+
+.tl-insert-caret::before {
+  top: 0;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+.tl-insert-caret::after {
+  bottom: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+/* ------------------------------------------------------- context menu anchors
+   Both context menus — the clip's and the track's — open from a zero-size button
+   parked at the pointer, so one shared popover can open where the user clicked.
+   `display: contents` keeps the host out of the lane's own layout entirely.
+
+   `position: fixed` is the reason both hosts are mounted inside `.tl-lanes` and
+   not inside `.tl-lane-content` or `.tl-heads-content`: those two carry
+   `will-change: transform`, which makes them the containing block for a fixed
+   descendant, and the coordinates written here are the pointer's VIEWPORT ones. */
+
+.tl-clip-menu-host,
+.tl-track-menu-host {
   display: contents;
 }
 
-.tl-clip-menu-anchor {
+.tl-clip-menu-anchor,
+.tl-track-menu-anchor {
   position: fixed;
   width: 0;
   height: 0;

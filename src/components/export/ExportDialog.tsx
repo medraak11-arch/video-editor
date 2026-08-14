@@ -70,6 +70,19 @@ const RANGE_OPTIONS: ReadonlyArray<{ value: ExportSettings['range']; label: stri
   { value: 'inout', label: 'In to out' },
 ];
 
+/**
+ * CREATIVE §6.3. A two-value `Select` and not a hand-rolled checkbox: PLAN §5
+ * closes the primitive inventory at twelve and none of them is a checkbox, and
+ * `Select` is the one that already carries `disabled` + `disabledReason` —
+ * which this control needs, because it is unusable for an audio format and for a
+ * project with no cues, and a control that is dead for a stated reason beats one
+ * that is live and does nothing.
+ */
+const SUBTITLE_OPTIONS: ReadonlyArray<{ value: 'off' | 'burn'; label: string }> = [
+  { value: 'off', label: 'Off' },
+  { value: 'burn', label: 'Burn in' },
+];
+
 const PHASE_LABEL: Record<ExportProgressEvent['phase'], string> = {
   preparing: 'Preparing',
   encoding: 'Encoding',
@@ -106,6 +119,7 @@ export function ExportDialog(): ReactElement {
   const inPoint = useEditorStore((s) => s.inPoint);
   const outPoint = useEditorStore((s) => s.outPoint);
   const clipsById = useEditorStore((s) => s.clips);
+  const cuesById = useEditorStore((s) => s.subtitles);
 
   const bridge = useMemo(() => getEditorAPI().export ?? exportStub, []);
 
@@ -128,9 +142,22 @@ export function ExportDialog(): ReactElement {
       codec: 'h264',
       quality: 'good',
       range: 'entire',
+      // A SETTING, not a project property: the same edit ships once with open
+      // captions and once clean beside a sidecar .srt, and off is the answer
+      // that surprises nobody.
+      burnSubtitles: false,
     };
   });
   const [event, setEvent] = useState<ExportProgressEvent | null>(null);
+  /**
+   * CREATIVE §4.3 — what the build could honour only in part. LATCHED, because
+   * the contract sends it on exactly one mid-flight event and never repeats it
+   * (api.ts, `ExportProgressEvent.notices`), while the place it needs to be read
+   * is the completion screen several seconds later. Rendering straight off
+   * `event` would show it for a quarter of a second during encoding and then
+   * throw it away.
+   */
+  const [notices, setNotices] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
   const [filenameError, setFilenameError] = useState<string | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
@@ -152,8 +179,10 @@ export function ExportDialog(): ReactElement {
       codec: 'h264',
       quality: 'good',
       range: s.inPoint !== null || s.outPoint !== null ? 'inout' : 'entire',
+      burnSubtitles: false,
     });
     setEvent(null);
+    setNotices([]);
     setStarting(false);
     setFilenameError(null);
     setFolderError(null);
@@ -177,6 +206,8 @@ export function ExportDialog(): ReactElement {
         awaitingJob.current = false;
       }
       if (next.jobId !== jobRef.current) return;
+      // Latched rather than read off `event` at render — see `notices` above.
+      if (next.notices && next.notices.length > 0) setNotices(next.notices);
       setEvent(next);
     });
   }, [open, bridge]);
@@ -196,6 +227,12 @@ export function ExportDialog(): ReactElement {
   const outputName = `${settings.filename || 'Untitled'}.${CONTAINER[settings.codec]}`;
   const hasInOut = inPoint !== null || outPoint !== null;
   const audioOnly = isAudioOnlyCodec(settings.codec);
+  const cueCount = Object.keys(cuesById ?? {}).length;
+  const subtitlesDisabledReason = audioOnly
+    ? 'An audio file has no picture to burn subtitles into'
+    : cueCount === 0
+      ? 'This project has no subtitles yet'
+      : undefined;
 
   // Keyed on the PROJECT size, never on settings.width/height: the list must not
   // change shape when the user picks from it, and the project size is always in
@@ -280,21 +317,32 @@ export function ExportDialog(): ReactElement {
 
     setStarting(true);
     setEvent(null);
+    setNotices([]);
     jobRef.current = null;
     awaitingJob.current = true;
 
     const resolved = resolveExportRange(readStore(), settings.range);
     try {
+      // Awaited, because assembling the document now rasterises every title
+      // clip through the same `drawTitle` the preview uses (CREATIVE §5.2) and
+      // `convertToBlob` is async. It happens before `start` so the request the
+      // bridge sees is complete; the dialog is already showing `Preparing`.
+      const document = await buildExportDocument(readStore());
       const { jobId } = await bridge.start({
         ...settings,
         filename,
         folder,
+        // Re-derived rather than trusted: the codec can have moved to an audio
+        // format, or the last cue can have been deleted, since the row was last
+        // rendered, and a setting that outlives its own precondition is the
+        // shape of bug the dialog cannot see.
+        burnSubtitles: settings.burnSubtitles && subtitlesDisabledReason === undefined,
         startFrame: resolved.startFrame,
         durationFrames: resolved.durationFrames,
         // A main-process bridge has no other way to see the timeline. Sent
         // unfiltered — range and track flags are the graph builder's to apply,
         // in one place (EXPORT §1.9, §6).
-        document: buildExportDocument(readStore()),
+        document,
       });
       if (jobRef.current === null) jobRef.current = jobId;
       awaitingJob.current = false;
@@ -330,6 +378,7 @@ export function ExportDialog(): ReactElement {
 
   const backToSettings = (): void => {
     setEvent(null);
+    setNotices([]);
     setStarting(false);
     jobRef.current = null;
     awaitingJob.current = false;
@@ -450,6 +499,25 @@ export function ExportDialog(): ReactElement {
             </p>
           ) : null}
 
+          {/* CREATIVE §4.3, §4.3d. Shown on completion and NOT on cancel or
+              error, because a notice says "the file exists and is not quite the
+              edit" — and on those two branches there is no file for it to be a
+              statement about. `warning`, not `danger`: nothing failed.
+
+              One InlineNotice per notice rather than a joined list: the
+              primitive takes one message, and two degraded transitions are two
+              separate facts about two separate clips. */}
+          {phase === 'done'
+            ? notices.map((note) => (
+                <InlineNotice
+                  key={note}
+                  tone="warning"
+                  title="Exported with a change"
+                  message={note}
+                />
+              ))
+            : null}
+
           {phase === 'cancelled' ? (
             <p className="ve-export-result type-body">
               <span className="ve-export-result-icon" aria-hidden="true">
@@ -558,6 +626,23 @@ export function ExportDialog(): ReactElement {
               value={settings.quality}
               options={QUALITY_OPTIONS}
               onChange={(quality: ExportSettings['quality']) => patch({ quality })}
+            />
+          </PropertyRow>
+
+          {/* Rendered even when it is unusable, unlike Resolution and Frame
+              rate above: those are meaningless for an audio file, whereas this
+              one is meaningful and merely unavailable, and its absence would
+              read as "this build cannot burn subtitles". The reason is on the
+              control. */}
+          <PropertyRow label="Subtitles" htmlFor="ve-export-subtitles">
+            <Select
+              id="ve-export-subtitles"
+              label="Burn in subtitles"
+              value={settings.burnSubtitles ? 'burn' : 'off'}
+              options={SUBTITLE_OPTIONS}
+              disabled={subtitlesDisabledReason !== undefined}
+              disabledReason={subtitlesDisabledReason}
+              onChange={(next: 'off' | 'burn') => patch({ burnSubtitles: next === 'burn' })}
             />
           </PropertyRow>
 

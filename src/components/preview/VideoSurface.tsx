@@ -3,27 +3,57 @@
 
    Renders the topmost visible video clip under the playhead through a pool of
    two <video> elements: one on screen, one holding the next clip's source so a
-   cut does not flash black. This build composites that single clip only —
-   opacity, scale, position and rotation apply to it against the well.
+   cut does not flash black. It composites that single MEDIA clip, plus the title
+   stack over and under it — opacity, scale, position, rotation, grade and the
+   transition ramp apply per clip against the well.
 
-   It subscribes to `selectVideoClipIdAtFrame`, a ClipId | null, so it renders at
-   clip boundaries rather than at frame rate. Everything that moves with the
-   playhead — the element's currentTime, the fixture still's timecode — is
-   written imperatively from a store subscription and causes no React render.
+   The pool's clip is `selectPictureClipIdAtFrame` (pictureClip.ts), NOT the
+   topmost clip. Those differ exactly when a title is on top, and conflating them
+   is what left the well black over footage the export composites correctly. It
+   is a ClipId | null either way, so this still renders at clip boundaries rather
+   than at frame rate. Everything that moves with the playhead — the element's
+   currentTime, the fixture still's timecode — is written imperatively from a
+   store subscription and causes no React render.
 
    Over a gap, over an offline source, or over an empty timeline it shows the
    bare well and nothing else: no icon, no text, no placeholder graphic
    (PLAN §8.14 — the media rail owns the one empty state in the app).
+
+   CREATIVE ADDS SEVERAL LAYERS TO THE STAGE, and their order in the JSX is
+   their compositing order, because paint order inside the stage is document
+   order:
+
+     dissolve underlay → titles below the clock clip → pool slots → fixture
+     still → the clock clip's vignette → titles above it → cues
+
+   TITLES ARE A STACK, NOT A PROPERTY OF THE CLOCK CLIP. This surface draws one
+   MEDIA clip — the topmost, the one that carries the playback clock and the
+   sound — but it draws EVERY title that is in range on a visible video track,
+   in track order, because that is what the export overlays. Drawing a title
+   only when it happened to be the clock clip meant a title on V2 over footage
+   on V1 produced no canvas at all while the file composited it correctly. See
+   TitleClipLayer for where the order comes from.
+
+   Every drawn layer's grade, effects, opacity and transition ramp come from
+   `useClipLayer`, keyed on the clip that layer belongs to — so a layer cannot be
+   given the transform and miss the filter, and a title cannot be drawn with the
+   footage's geometry. The ramp is `transitionGain` from src/lib/color.ts, the
+   SAME function that multiplies the audio voice gain at the same frame, which is
+   what stops a fade drifting between picture and sound. It is asked once per
+   stream, because CREATIVE §4.3a makes a cross dissolve a picture event with no
+   audio ramp; the rule is that function's and is not repeated here.
 --------------------------------------------------------------------------- */
 
 import './preview.css';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties, MutableRefObject, ReactElement } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { MutableRefObject, ReactElement } from 'react';
 import { readStore, useEditorStore } from '../../state/store';
-import { clipHasAudio } from '../../types/model';
+import { clipHasAudio, clipUsesMedia, trackVolume } from '../../types/model';
 import { framesToSeconds, framesToTimecode } from '../../lib/time';
+import { transitionGain } from '../../lib/color';
 import { SHUTTLE_REVERSE_MAX_SEEKS_PER_SEC } from '../../lib/constants';
-import { selectNextVideoClipIdAfter, selectVideoClipIdAtFrame } from '../../state/timelineSlice';
+import { selectVideoClipIdAtFrame } from '../../state/timelineSlice';
+import { selectNextPictureClipIdAfter, selectPictureClipIdAtFrame } from './pictureClip';
 import {
   EMPTY_POOL,
   EMPTY_SLOT,
@@ -31,11 +61,19 @@ import {
   PLAYBACK_RATE_MIN,
   derivePool,
   effectiveGain,
+  mixVolume,
   otherSlot,
   sourceContiguous,
   transportSilent,
 } from './audioMonitor';
 import type { Pool, Slot, SlotIndex } from './audioMonitor';
+import { ClipFilter } from './ClipFilter';
+import { vignetteOpacity } from './clipRender';
+import { DissolveUnderlay } from './DissolveUnderlay';
+import { selectDissolveRamping, selectDissolveUnderlayClipId } from './dissolve';
+import { SubtitleLayer } from './SubtitleLayer';
+import { TitleClipLayer, selectTitleClipIds, splitTitleClipIds } from './TitleClipLayer';
+import { useClipLayer } from './useClipLayer';
 
 /** Half a frame at 30fps: below this, a currentTime write would be a no-op judder. */
 const SEEK_EPSILON_SECONDS = 1 / 60;
@@ -59,6 +97,7 @@ const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
  */
 const TRANSIENT_RELOAD_ATTEMPTS = 2;
 
+
 export interface VideoSurfaceProps {
   /**
    * Published to the playback clock, which derives the playhead from this element's
@@ -70,8 +109,16 @@ export interface VideoSurfaceProps {
 export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElement {
   /* ---------------------------------------------------------- what to show */
 
-  const clipId = useEditorStore((s) => selectVideoClipIdAtFrame(s, s.playhead));
-  const nextClipId = useEditorStore((s) => selectNextVideoClipIdAfter(s, s.playhead));
+  /*
+    THE POOL'S CLIP IS THE PICTURE CLIP, not the topmost clip. A title is a clip
+    on a video track with no media, so pointing the pool at the topmost clip left
+    both <video> elements with no src whenever a title was on top — a black frame
+    where the export composites the footage. See pictureClip.ts; on a project
+    with no titles these return exactly what the slice's selectors return, so
+    cuts and preloading are unchanged rather than newly-tested.
+  */
+  const clipId = useEditorStore((s) => selectPictureClipIdAtFrame(s, s.playhead));
+  const nextClipId = useEditorStore((s) => selectNextPictureClipIdAfter(s, s.playhead));
 
   const clip = useEditorStore(
     useCallback((s) => (clipId ? (s.clips[clipId] ?? null) : null), [clipId]),
@@ -79,12 +126,45 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
   const nextClip = useEditorStore(
     useCallback((s) => (nextClipId ? (s.clips[nextClipId] ?? null) : null), [nextClipId]),
   );
+  /*
+    `clipUsesMedia`, not a truthiness test on the clip (CREATIVE §9.4 item 2). A
+    title clip carries `mediaId: ''`, and `s.items['']` is undefined rather than
+    an error — so without this guard the title reads as an offline source, the
+    label says so, and the well shows nothing with a plausible-looking reason.
+  */
   const media = useEditorStore(
-    useCallback((s) => (clip ? (s.items[clip.mediaId] ?? null) : null), [clip]),
+    useCallback((s) => (clip && clipUsesMedia(clip) ? (s.items[clip.mediaId] ?? null) : null), [clip]),
   );
   const nextMedia = useEditorStore(
-    useCallback((s) => (nextClip ? (s.items[nextClip.mediaId] ?? null) : null), [nextClip]),
+    useCallback(
+      (s) => (nextClip && clipUsesMedia(nextClip) ? (s.items[nextClip.mediaId] ?? null) : null),
+      [nextClip],
+    ),
   );
+
+  // Both scalar, both flipping at most twice per dissolve — see DissolveUnderlay.
+  const underlayClipId = useEditorStore((s) => selectDissolveUnderlayClipId(s, s.playhead));
+  const underlayVisible = useEditorStore((s) => selectDissolveRamping(s, s.playhead));
+
+  /*
+    THE TITLE STACK, and note what it is NOT conditioned on: the clock clip. A
+    title draws because it is in range on a visible video track, which is the
+    export's own rule — the previous build drew one only when it happened to be
+    the clock clip, so a title on V2 over footage on V1 produced no canvas at all
+    while the file composited it correctly. Two scalar strings, split at the
+    clock clip because the preview draws exactly one MEDIA clip and a title below
+    that clip is covered by it in the file. See TitleClipLayer.
+  */
+  // [stable] The topmost drawn clip of any kind — for the accessible name only.
+  const topClipId = useEditorStore((s) => selectVideoClipIdAtFrame(s, s.playhead));
+  const topClip = useEditorStore(
+    useCallback((s) => (topClipId ? (s.clips[topClipId] ?? null) : null), [topClipId]),
+  );
+
+  const titleIdsBelow = useEditorStore((s) => selectTitleClipIds(s, s.playhead, 'below'));
+  const titleIdsAbove = useEditorStore((s) => selectTitleClipIds(s, s.playhead, 'above'));
+  const titlesBelow = useMemo(() => splitTitleClipIds(titleIdsBelow), [titleIdsBelow]);
+  const titlesAbove = useMemo(() => splitTitleClipIds(titleIdsAbove), [titleIdsAbove]);
 
   const projectWidth = useEditorStore((s) => s.width);
   const projectHeight = useEditorStore((s) => s.height);
@@ -93,6 +173,8 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
   const volume = useEditorStore((s) => s.volume);
   const muted = useEditorStore((s) => s.muted);
 
+  // No `isTitle` here any more, and its absence is the fix: `clip` is the
+  // PICTURE clip, so it can never be a title. Titles are drawn by the stack.
   const online = media !== null && media.status !== 'error';
   const currentUrl = online && media.url !== '' ? media.url : '';
   const nextUrl =
@@ -189,7 +271,7 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
     if (!el) return;
 
     const s = readStore();
-    const id = selectVideoClipIdAtFrame(s, s.playhead);
+    const id = selectPictureClipIdAtFrame(s, s.playhead);
     const current = id ? s.clips[id] : undefined;
     if (!current) return;
 
@@ -244,9 +326,37 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
   // Written here rather than inside `effectiveGain`, which is the gain LAW and is
   // asserted against a table of scalars — a clip-shaped argument would make that
   // assertion untestable.
-  const clipVolume = clip !== null && clipHasAudio(clip) ? clip.properties.volume : 0;
+  const clipVolume =
+    clip !== null && clipUsesMedia(clip) && clipHasAudio(clip) ? clip.properties.volume : 0;
   const trackMuted = useEditorStore(
     useCallback((s) => (clip ? (s.tracks[clip.trackId]?.muted ?? false) : false), [clip]),
+  );
+  /*
+    CREATIVE §9.4 item 1, THE bug this feature is most likely to ship with. The
+    <video> element carries the clock clip's audio and nothing else carries it,
+    so a fader applied to the mix voices and not here is a fader that works on
+    every track except the one being watched — which is the one the user is
+    listening to while they move it.
+  */
+  const trackGain = useEditorStore(
+    useCallback((s) => {
+      const track = clip ? s.tracks[clip.trackId] : undefined;
+      return track ? trackVolume(track) : 1;
+    }, [clip]),
+  );
+  /*
+    CREATIVE §4.2 / §4.3a. The picture ramp lives in `useClipLayer` with the rest
+    of the clip's drawing, because every drawn layer needs it. The SOUND ramp is
+    here, because only this element carries the clock clip's audio — one
+    function, two streams, evaluated at the same frame, and the rule that
+    separates them is `transitionGain`'s and is not restated at either call site.
+
+    Exactly 1 for a clip with no transitions, so this subscription costs no
+    render outside a ramp — which is what keeps a component that deliberately
+    renders at clip boundaries from becoming one that renders at frame rate.
+  */
+  const soundGain = useEditorStore(
+    useCallback((s) => (clip ? transitionGain(clip, s.playhead, 'audio') : 1), [clip]),
   );
 
   useEffect(() => {
@@ -284,19 +394,26 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
    *
    * `transportSilent` carries §4.2's rule that 8× shuttle is silent. The element MUTES
    * rather than pausing, because the picture keeps shuttling.
+   *
+   * Two terms were added by CREATIVE: the TRACK fader, which multiplies the clip term
+   * (§1.2 — effective gain is the product, which is what a mixer does), and the
+   * transition ramp, which multiplies the whole level by the same `transitionGain` the
+   * picture's opacity is multiplied by, at the same frame.
    */
   useEffect(() => {
-    const gain = effectiveGain(clipVolume, trackMuted, volume, muted, transportSilent(rate));
+    const level =
+      effectiveGain(mixVolume(clipVolume, trackGain), trackMuted, volume, muted, transportSilent(rate)) *
+      soundGain;
     elements.current.forEach((el, index) => {
       if (!el) return;
       const isActive = index === pool.active && playable;
-      el.volume = isActive ? gain : 0;
-      el.muted = !isActive || gain === 0;
+      el.volume = isActive ? level : 0;
+      el.muted = !isActive || level === 0;
       // At normal speed clip `speed` is applied pitch-preserved, matching export's atempo
       // chain; while shuttling, tape-style pitch rise is the convention.
       el.preservesPitch = Math.abs(rate) === 1;
     });
-  }, [volume, muted, pool, playable, clipVolume, trackMuted, rate]);
+  }, [volume, muted, pool, playable, clipVolume, trackGain, trackMuted, rate, soundGain]);
 
   /**
    * Park the idle element on the first frame of the clip it is preloading, so the cut
@@ -443,23 +560,31 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
   /* ---------------------------------------------------------------- render */
 
   const scaleToStage = projectWidth > 0 ? stageWidth / projectWidth : 1;
-  const frameStyle: CSSProperties = clip
-    ? {
-        opacity: clip.properties.opacity,
-        transform: [
-          `translate(${clip.properties.positionX * scaleToStage}px, ${
-            clip.properties.positionY * scaleToStage
-          }px)`,
-          `rotate(${clip.properties.rotation}deg)`,
-          `scale(${clip.properties.scale})`,
-        ].join(' '),
-      }
-    : {};
 
-  const label = clip
-    ? online
-      ? `Preview, ${clip.name}`
-      : `Preview, ${clip.name}, source is offline`
+  /*
+    One style object for every layer this clip draws — the pool element, the
+    fixture still, the title canvas and the vignette all take it. The grade and
+    the effects are NOT a second appearance of the clip's properties: they are
+    the same three lines, so a layer cannot be given the transform and miss the
+    filter. `filter` is `undefined` for an ungraded, unblurred clip, which React
+    then omits entirely — CREATIVE §2.2's `neutral` fast path, honoured in the
+    only place it can be observed.
+  */
+  const { style: frameStyle, filterSpec, filterId } = useClipLayer(clip, scaleToStage);
+
+  const vignette = clip ? vignetteOpacity(clip.properties) : 0;
+
+  /*
+    The label names the TOPMOST drawn clip, which is the slice's selector and the
+    one place it is still the right question: with a title over footage the thing
+    a screen reader should announce is the title, even though the element below
+    is carrying the footage. The offline qualifier stays keyed to the picture
+    clip, because that is the one that can be offline.
+  */
+  const label = topClip
+    ? clip === null || online
+      ? `Preview, ${topClip.name}`
+      : `Preview, ${topClip.name}, source is offline`
     : 'Preview, no clip under the playhead';
 
   return (
@@ -470,6 +595,32 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
         aria-label={label}
         style={{ width: `${stageWidth}px`, height: `${stageHeight}px` }}
       >
+        {filterSpec !== null ? <ClipFilter id={filterId} spec={filterSpec} /> : null}
+
+        {/* FIRST in the stage, and that is the whole reason it works: paint order
+            inside the stage is document order, so the outgoing clip of a
+            cross-dissolve sits under both pool slots without a z-index. */}
+        <DissolveUnderlay
+          clipId={underlayClipId}
+          visible={underlayVisible}
+          scaleToStage={scaleToStage}
+          stageWidth={stageWidth}
+          stageHeight={stageHeight}
+        />
+
+        {/* Titles the export composites UNDER the clock clip. They are drawn
+            first, so the footage covers them here exactly as the overlay does
+            in the file. */}
+        {titlesBelow.map((id) => (
+          <TitleClipLayer
+            key={id}
+            clipId={id}
+            scaleToStage={scaleToStage}
+            stageWidth={stageWidth}
+            stageHeight={stageHeight}
+          />
+        ))}
+
         {([0, 1] as SlotIndex[]).map((index) => (
           <video
             key={index}
@@ -498,6 +649,41 @@ export function VideoSurface({ activeVideoRef }: VideoSurfaceProps): ReactElemen
             />
           </>
         ) : null}
+
+        {/* The CLOCK CLIP's vignette, and it belongs to that clip — same
+            transform, same opacity — because the graph vignettes a clip's
+            picture and then places it, not the programme. So it is drawn
+            immediately over the clip it belongs to and UNDER any title that
+            composites above that clip, which is where the overlay puts it. */}
+        {vignette > 0 ? (
+          <div
+            className="ve-video-vignette"
+            aria-hidden="true"
+            style={{
+              opacity: vignette * (frameStyle.opacity as number),
+              transform: frameStyle.transform,
+            }}
+          />
+        ) : null}
+
+        {/* Titles the export composites OVER the clock clip, bottom-first. Each
+            carries its OWN clip's opacity, geometry, grade and transition — a
+            title is an ordinary clip on a video track (§5.1), and nothing here
+            reads the clock clip's properties on its behalf. */}
+        {titlesAbove.map((id) => (
+          <TitleClipLayer
+            key={id}
+            clipId={id}
+            scaleToStage={scaleToStage}
+            stageWidth={stageWidth}
+            stageHeight={stageHeight}
+          />
+        ))}
+
+        {/* Last, and above every clip layer: cues are a property of the programme
+            (CREATIVE §6.1) and the burn-in is appended to the TERMINAL chain,
+            after the last overlay, where no clip's grade can reach it. */}
+        <SubtitleLayer stageHeight={stageHeight} />
       </div>
     </div>
   );

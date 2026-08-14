@@ -16,8 +16,9 @@
 import './timeline.css';
 import { useCallback } from 'react';
 import type { ReactElement, RefObject } from 'react';
-import { Bookmark, Magnet, Maximize2, Scissors, ZoomIn, ZoomOut } from 'lucide-react';
+import { Bookmark, Magnet, Maximize2, Scissors, Type, ZoomIn, ZoomOut } from 'lucide-react';
 import { IconButton } from '../ui';
+import { addTitleAtPlayhead } from './titleCommand';
 import { ShortcutHint } from '../../keyboard/ShortcutHint';
 import { readStore, useEditorStore } from '../../state/store';
 import { selectSelectionCount } from '../../state/timelineSlice';
@@ -42,6 +43,14 @@ export function TimelineToolbar({ laneViewportRef }: TimelineToolbarProps): Reac
 
   const onMarker = useCallback(() => {
     readStore().addMarker();
+  }, []);
+
+  // `addTitleAtPlayhead` raises its own refusal notice, so the button and the
+  // `T` shortcut cannot explain themselves differently (PLAN §5, §3.4). The
+  // button stays ENABLED with no video track to put a title on — a disabled
+  // control in a dark UI is nearly invisible and offers no reason (DESIGN.md §5).
+  const onAddTitle = useCallback(() => {
+    addTitleAtPlayhead();
   }, []);
 
   const onSnap = useCallback(() => {
@@ -79,6 +88,13 @@ export function TimelineToolbar({ laneViewportRef }: TimelineToolbarProps): Reac
         label="Add marker at playhead"
         shortcut={<ShortcutHint id="edit.marker" />}
         onClick={onMarker}
+      />
+      <IconButton
+        size="sm"
+        icon={<Type size={14} strokeWidth={1.75} />}
+        label="Add title at playhead"
+        shortcut={<ShortcutHint id="edit.addTitle" />}
+        onClick={onAddTitle}
       />
 
       <span className="tl-toolbar-sep" aria-hidden="true" />

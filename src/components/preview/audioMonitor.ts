@@ -197,6 +197,29 @@ export const monitorAudible = (clip: Clip, track: Track, media: MediaItem): bool
  * the exact bug `normalize=0` exists to prevent, and reintroducing it on the monitoring
  * side would make the preview quieter as the mix got busier.
  */
+/**
+ * CREATIVE §1.2's middle term, applied ONCE so all three consumers spell it the
+ * same way — the two preview consumers here, and `graph.ts`'s `volume=` in the
+ * export. Effective gain is the PRODUCT of the clip term and the track term,
+ * because that is what a mixer does and it is what makes a track fader compose
+ * with a clip the user already trimmed by ear; the minimum, or a sum in dB,
+ * would both make the fader change the clip's setting rather than ride it.
+ *
+ * Deliberately OUTSIDE `effectiveGain`: that function is the gain LAW and is
+ * asserted against a table of scalars, and a `Track`-shaped argument would make
+ * that assertion untestable — the same reason VideoSurface computes its clip
+ * term before calling it rather than passing a clip in.
+ *
+ * NOTE the headroom this spends. `MONITOR_REFERENCE_GAIN` maps model unity onto
+ * 0.5 so the clip range 0..2 fits the element's 0..1 with no clamping; with a
+ * track fader on top the product reaches 4, and the law's clamp then bites above
+ * a product of 2. That ceiling is only reachable with BOTH faders past unity,
+ * where the export is clipping anyway, and lowering the reference to buy it back
+ * would cost every ordinary edit another 6 dB of monitoring level.
+ */
+export const mixVolume = (clipVolume: number, trackGain: number): number =>
+  clipVolume * trackGain;
+
 export function effectiveGain(
   clipVolume: number,
   trackMuted: boolean,

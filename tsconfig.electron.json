@@ -13,5 +13,12 @@
     "noEmit": false,
     "types": ["node"]
   },
-  "include": ["electron/**/*.ts", "src/types/api.ts", "src/types/model.ts"]
+  "include": [
+    "electron/**/*.ts",
+    "src/types/api.ts",
+    "src/types/model.ts",
+    "src/lib/color.ts",
+    "src/lib/srt.ts",
+    "src/lib/id.ts"
+  ]
 }

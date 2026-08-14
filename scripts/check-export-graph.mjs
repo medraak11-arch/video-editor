@@ -11,7 +11,7 @@
    exactly how a one-character change to `offset()`'s output slips through — and
    FORMAT.md §6.2 is a change to what `offset()` is fed.
 
-   Four cases, not three:
+   Five cases, not three:
      A  30 fps project, 30 fps export — compositing, a gap, speed, scale,
         opacity-0-with-audio, a 24 fps source.
      B  30 fps project, 24 fps export — the two frame rates.
@@ -20,6 +20,12 @@
         positionX 100. A, B and C are all req === doc, where the placement
         rescale is a provable no-op, so without D the whole point of FORMAT §6.2
         is unmeasured: the three real transcripts cannot see it by construction.
+     E  TRACK ORDER, CREATIVE §11.1 — two overlapping video clips on different
+        tracks, built through `addTrack`/`addClip`, asserting that the export and
+        the preview name the SAME clip as the top of the stack, plus the same
+        invariant across a serialise/migrate round trip. A/B/C/D are hand-written
+        transcripts by design; E measures the app against itself and is therefore
+        built through store actions, per §11.2.
 
    It bundles electron/export/graph.ts FROM SOURCE with esbuild, exactly as
    check-fps-snap.mjs and check-timeline-guards.mjs already bundle src/state/*.ts.
@@ -43,24 +49,43 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const entry = fileURLToPath(new URL('../electron/export/graph.ts', import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), 've-export-graph-'));
-const outfile = join(dir, 'graph.mjs');
+/* CREATIVE §7.4 entry 8 — the bundle survives a FAILURE. Deleted on a pass; on a
+   failure it is kept and its path printed, so what was actually compiled can be
+   read rather than guessed at. An unreproducible `check-linking` failure was
+   once diagnosed as a torn mid-save read and relayed onward as such; there was
+   no torn file — another agent had bound `V` to two rows and the gate caught the
+   mutation in flight. Naming a mechanism is not evidence. This is what makes it
+   checkable in one look. */
+let keepBundle = false;
+process.on('exit', () => {
+  if (keepBundle) return;
+  rmSync(dir, { recursive: true, force: true });
+});
 
-let mod;
-try {
+async function bundle(relative, name) {
+  const outfile = join(dir, `${name}.mjs`);
   await build({
-    entryPoints: [entry],
+    entryPoints: [fileURLToPath(new URL(relative, import.meta.url))],
     outfile,
     bundle: true,
     format: 'esm',
     platform: 'node',
     logLevel: 'silent',
   });
-  mod = await import(pathToFileURL(outfile).href);
-} finally {
-  process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+  return import(pathToFileURL(outfile).href);
 }
+
+const mod = await bundle('../electron/export/graph.ts', 'graph');
+/* Case E only. The four transcript cases below are hand-written documents on
+   purpose — they are EXPORT §1.8's verified ffmpeg runs, diffed byte for byte,
+   and their whole value is that they are the transcript rather than something
+   the app produced today. §11.2's rule bites on the NEW case, which measures the
+   app against itself and must therefore be built through the actions a user's
+   gestures call. */
+const timeline = await bundle('../src/state/timelineSlice.ts', 'timelineSlice');
+const projectLib = await bundle('../src/lib/project.ts', 'project');
+const exportDoc = await bundle('../src/components/export/exportDocument.ts', 'exportDocument');
 
 const { buildExportGraph } = mod;
 if (typeof buildExportGraph !== 'function') {
@@ -392,13 +417,236 @@ if (gDdouble) eq('D overlay at 2x resolution', overlayLine(gDdouble), OVERLAY_D_
 const gDsame = run('D (req === doc)', { ...reqA, document: docD });
 if (gDsame) eq('D overlay at 1x resolution', overlayLine(gDsame), OVERLAY_D_SAME);
 
+/* ================================================================= case E ==
+   CREATIVE §11.1 — TRACK ORDER, and specifically NOT the obvious assertion.
+
+   The preview's D1 fix derives stacking from the convention that `trackOrder`
+   runs top-to-bottom, rather than copying `compositeTracks` out of
+   exportDocument.ts. That was the right call — a second ordering table is this
+   defect class reproducing itself — but it makes an ungated convention
+   load-bearing in a second place.
+
+   "trackOrder is top-first" IS NOT DIRECTLY CHECKABLE. Looking at `[t1, t2]`
+   tells you nothing about which the user believes is on top; it is a statement
+   about what the array MEANS, and no assertion can read intent out of data. A
+   gate claiming to check it would be a restatement — §2.4's lesson, again, and
+   the planner rejected its own first draft of this section for exactly that.
+
+   What IS checkable is that the two consumers AGREE. Two overlapping video clips
+   on different tracks: the export must overlay the `trackOrder`-earlier one LAST
+   (so it lands on top of the composite) and the preview must pick that same clip
+   as the one on top. Neither side's direction is asserted — only that they name
+   the SAME clip. It therefore holds whichever way the stack runs, and it fails
+   loudly the day either side flips.
+
+   Nothing below states which `addTrack` call produced the higher track. The
+   fixture reads that back out of `trackOrder` itself, which is what keeps this
+   an agreement test rather than a third opinion.
+--------------------------------------------------------------------------- */
+
+const MEDIA_LOWER = 'm_lower';
+const MEDIA_UPPER = 'm_upper';
+
+function freshStore() {
+  const state = {};
+  const get = () => state;
+  const set = (partial) => Object.assign(state, typeof partial === 'function' ? partial(state) : partial);
+
+  Object.assign(
+    state,
+    {
+      items: {},
+      order: [],
+      projectName: 'order',
+      playhead: 0,
+      fps: 30,
+      width: 1920,
+      height: 1080,
+      inPoint: null,
+      outPoint: null,
+      notice: null,
+      markDirty: () => {},
+      markSaved: () => {},
+      setNotice: (n) => {
+        state.notice = n;
+      },
+    },
+    timeline.createTimelineSlice(set, get, {}),
+  );
+
+  for (const id of [MEDIA_LOWER, MEDIA_UPPER]) {
+    state.order.push(id);
+    state.items[id] = {
+      id,
+      kind: 'video',
+      name: `${id}.mp4`,
+      path: `/media/${id}.mp4`,
+      url: `ve-media://${id}.mp4`,
+      status: 'ready',
+      durationFrames: 6000,
+      durationSeconds: 200,
+      hasAudio: false,
+      width: 1920,
+      height: 1080,
+    };
+  }
+  return state;
+}
+
+{
+  const s = freshStore();
+  const trackA = s.addTrack('video');
+  const trackB = s.addTrack('video');
+
+  // WHICH of the two is higher is read back, never assumed.
+  const rankA = s.trackOrder.indexOf(trackA);
+  const rankB = s.trackOrder.indexOf(trackB);
+  eq('E: the two tracks are distinct positions in trackOrder', rankA === rankB, false);
+  const earlierTrack = rankA < rankB ? trackA : trackB;
+  const laterTrack = rankA < rankB ? trackB : trackA;
+
+  const mk = (mediaId, trackId) => {
+    const r = s.addClip({ mediaId, trackId, start: 0, duration: 60 });
+    if (!r.ok) throw new Error(`addClip refused: ${JSON.stringify(r)}`);
+    return r.id;
+  };
+  const earlierClip = mk(MEDIA_UPPER, earlierTrack);
+  const laterClip = mk(MEDIA_LOWER, laterTrack);
+
+  // The clips genuinely overlap in time, or there is no stack to order.
+  eq(
+    'E: the two clips overlap at frame 30',
+    s.clips[earlierClip].start <= 30 && s.clips[laterClip].start <= 30,
+    true,
+  );
+
+  const doc = await exportDoc.buildExportDocument(s);
+  const gE = run('E', {
+    ...reqA,
+    durationFrames: 60,
+    document: doc,
+  });
+
+  if (gE) {
+    /* The EXPORT side, measured out of the filter script. Input N's path is read
+       from argv, so a clip is identified by the file ffmpeg opens for it rather
+       than by an index this gate computed. */
+    const paths = gE.args.reduce((acc, a, i) => (gE.args[i - 1] === '-i' ? [...acc, a] : acc), []);
+    const overlays = gE.filterScript
+      .split(';\n')
+      .map((line) => /^\[[^\]]+\]\[v(\d+)\]overlay=/.exec(line))
+      .filter(Boolean)
+      .map((m) => Number(m[1]));
+
+    eq('E: both clips reached the overlay stack', overlays.length, 2);
+    const lastOverlaid = overlays.length > 0 ? paths[overlays[overlays.length - 1]] : '<none>';
+    const expectedTop = `/media/${MEDIA_UPPER}.mp4`;
+
+    if (lastOverlaid !== expectedTop) {
+      fail(
+        'E: the export overlays the trackOrder-EARLIER clip last (so it lands on top of the ' +
+          'composite) and the preview treats that same clip as the top of the stack. They now ' +
+          'disagree, which means a clip visible in the preview is buried in the file, or the ' +
+          `reverse — CREATIVE §11.1.\n    export overlaid last: ${lastOverlaid}\n    ` +
+          `expected the trackOrder-earlier clip: ${expectedTop}`,
+      );
+    }
+
+    /* The PREVIEW side, measured through the selector that decides what is on
+       screen. It walks `trackOrder` forward and returns the first hit, so the
+       trackOrder-earlier clip is the one it sorts FIRST — the top of the paint
+       order. Same clip, other consumer. */
+    const previewTop = timeline.selectVideoClipIdAtFrame(s, 30);
+    eq('E: the preview sorts the trackOrder-earlier clip first', previewTop, earlierClip);
+
+    // And the agreement itself, stated once so a reader cannot miss which fact
+    // is load-bearing: the clip the export puts on top IS the clip the preview
+    // puts on top. Whichever direction `trackOrder` runs.
+    const previewTopPath = previewTop === null ? '<none>' : `/media/${s.clips[previewTop].mediaId}.mp4`;
+    eq('E: the two consumers name the SAME clip as the top of the stack', lastOverlaid, previewTopPath);
+  }
+}
+
+/* ------------------------------- §11.1 item 2: the invariant on a ROUND TRIP
+
+   `addTrack` assigns `index`, video unshifts and audio appends, so within a kind
+   VIDEO DESCENDS by `index` through `trackOrder` and AUDIO ASCENDS. That is
+   mechanical today and it is what the stacking convention rests on.
+
+   The gate builds through `addTrack`, serialises, migrates back and asserts it
+   still holds — which catches a scaffold or state regression, the thing actually
+   worth catching. What it deliberately does NOT assert is that `migrateProject`
+   REPAIRS a bad order. §11.1 records the planner reversing itself on that: there
+   is no track-reordering gesture yet, and the day one is added `trackOrder` and
+   `Track.index` legitimately diverge. A sanitiser that sorted by `index` would
+   silently undo every reorder the user made, on load, with no way to see why —
+   and a hand-edited order and a future-reordered one are the same bytes. So
+   `migrateProject` honours whatever order it is given, and the assertion here is
+   that it CHANGES NOTHING. */
+
+{
+  const s = freshStore();
+  const v = [s.addTrack('video'), s.addTrack('video'), s.addTrack('video')];
+  const a = [s.addTrack('audio'), s.addTrack('audio')];
+  void v;
+  void a;
+
+  const file = projectLib.serializeProject(s);
+  // Through JSON, because that is what a `.veproj` is: a round trip that never
+  // left memory would not exercise the reader at all.
+  const migrated = projectLib.migrateProject(JSON.parse(JSON.stringify(file)));
+
+  if (migrated === null) {
+    fail('E round trip: migrateProject rejected a project this app just serialised');
+  } else {
+    eq(
+      'E round trip: migration honours the order it was given, unchanged',
+      migrated.trackOrder.join(','),
+      s.trackOrder.join(','),
+    );
+
+    const byId = Object.fromEntries(migrated.tracks.map((t) => [t.id, t]));
+    const indices = (kind) =>
+      migrated.trackOrder.map((id) => byId[id]).filter((t) => t?.kind === kind).map((t) => t.index);
+
+    const video = indices('video');
+    const audio = indices('audio');
+    eq('E round trip: all three video tracks survived', video.length, 3);
+    eq('E round trip: both audio tracks survived', audio.length, 2);
+
+    const descends = video.every((n, i) => i === 0 || video[i - 1] > n);
+    const ascends = audio.every((n, i) => i === 0 || audio[i - 1] < n);
+    if (!descends) {
+      fail(
+        'E round trip: video tracks no longer DESCEND by `index` through `trackOrder`. ' +
+          '`addTrack` unshifts a new video track, so the newest carries the highest index and ' +
+          'sits earliest — the fact the stacking convention rests on, in both consumers ' +
+          `(CREATIVE §11.1).\n    indices in trackOrder: ${JSON.stringify(video)}`,
+      );
+    }
+    if (!ascends) {
+      fail(
+        'E round trip: audio tracks no longer ASCEND by `index` through `trackOrder`. ' +
+          `\n    indices in trackOrder: ${JSON.stringify(audio)}`,
+      );
+    }
+  }
+}
+
 /* -------------------------------------------------------------------- verdict */
 
 if (failures.length) {
+  keepBundle = true;
   console.error(`export-graph: ${failures.length} FAILURES`);
   for (const f of failures) console.error('  ' + f);
+  console.error(
+    `\n  the bundled source this ran against is preserved at:\n    ${dir}\n` +
+      '  Deleted on a pass, kept on a failure, so what was actually compiled can be read ' +
+      'rather than guessed at — CREATIVE §7.4 entry 8.\n',
+  );
   process.exit(1);
 }
 console.log(
-  'export-graph: PASS — EXPORT §1.8 A/B/C diff byte-for-byte, and placement rescales 100 -> 200 at 2x',
+  'export-graph: PASS — EXPORT §1.8 A/B/C diff byte-for-byte, placement rescales 100 -> 200 at 2x, ' +
+    'and §11.1 track order agrees across both consumers and survives a round trip',
 );

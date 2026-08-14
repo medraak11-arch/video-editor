@@ -97,6 +97,88 @@
   visibility: visible;
 }
 
+/* ------------------------------------------------- CREATIVE §2 – §6 layers
+
+   Layer order inside the stage is DOCUMENT order and nothing else. There is no
+   z-index here and there must not be one: the scale in tokens.css names planes
+   in the application shell, and "underneath the frame you are watching" is not
+   one of them. VideoSurface renders the layers in the order they composite —
+   dissolve underlay, pool slots, still, title, vignette, subtitles — which is
+   the same order the export graph overlays them in.
+
+   NOTHING IN THIS BLOCK TRANSITIONS OR ANIMATES. A transition ramp is programme
+   content, not interface motion: it is what the file will contain, so hiding it
+   under prefers-reduced-motion would hide the edit rather than the chrome. The
+   only motion these layers have is the footage's own.                        */
+
+/* The <filter> definitions carry the grade (CREATIVE §2.2). They draw nothing —
+   only `filter: url(#…)` references them — so the carrier <svg> must take no
+   space and must never become a layer of its own. */
+.ve-video-filter-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The outgoing clip of a cross-dissolve (CREATIVE §4.3). Same geometry as a pool
+   slot; its visibility is written inline because it is a per-frame decision. */
+.ve-video-underlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: 50% 50%;
+  border: 0;
+  background: transparent;
+}
+
+/* A title clip's pixels, rasterised at devicePixelRatio by the EXPORT's own
+   drawTitle. Sized inline to the stage; centred by the stage's own box. */
+.ve-video-title {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+
+/* An approximation of ffmpeg's `vignette` (CREATIVE §3, labelled as such). The
+   darkening is --frame-matte, the black the export actually writes, so the
+   preview darkens toward the same colour in all three themes rather than toward
+   a per-theme well that is not in the file. Opacity is written inline. */
+.ve-video-vignette {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+  background: radial-gradient(ellipse at 50% 50%, transparent 35%, var(--frame-matte) 100%);
+  pointer-events: none;
+}
+
+/* Subtitle cues (CREATIVE §6). Every dimension is written inline as a fraction
+   of the stage height, because that is how the burn-in scales with the output.
+   Colour is user data from SubtitleStyle — the one place in this app a colour is
+   not a token — and the outline is --frame-matte, libass's default. */
+.ve-video-subtitles {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 0 var(--space-xxl);
+  text-align: center;
+  white-space: pre-line;
+  text-wrap: balance;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  /* Stroke BEHIND the glyph, not over it: -webkit-text-stroke centres the stroke
+     on the outline by default, which eats half the letterform at caption weight
+     — the opposite of what an outline is for. */
+  paint-order: stroke fill;
+  -webkit-text-stroke-color: var(--frame-matte);
+  pointer-events: none;
+}
+
 /* A legibility scrim over unknown image pixels, not a plane: --surface-well is closed by
    PLAN §7.0 to the well, the transport strip and the two field insets, and this is none of
    those. --scrim is the existing token for "darken whatever is underneath". */

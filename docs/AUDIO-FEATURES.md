@@ -594,6 +594,23 @@ const wantsAudio = !track.muted && props.volume > 0 && clipHasAudio(clip);
 insists on is preserved: `hasAudio` remains a property of the **file**, `volume`, `muted` and now
 `streams` are properties of the **edit**.
 
+**AMENDED — `wantsAudio` and `wantsVideo` have both grown terms since, and the split above is why
+they went where they did.** The current predicates are:
+
+```ts
+const wantsVideo =
+  !audioOnly && track.kind === 'video' && track.visible && props.opacity > 0 &&
+  nEnd > nStart && clipHasVideo(clip) && (!isTitle || titlePng !== null);
+const wantsAudio =
+  !track.muted && props.volume > 0 && trackVolume(track) > 0 && clipHasAudio(clip) && !isTitle;
+```
+
+`trackVolume(track) > 0` joined `muted` for the same reason `muted` is there: a track faded to
+silence is an **edit** decision, so a track at gain 0 contributes no input at all rather than a
+silent one (CREATIVE §1.3). `!isTitle` is the other half — a title carries `mediaId: ''`, so it has
+no stream to be audible and no source to look up; on the video side it contributes only once its
+raster has been handed in. Both are properties of the edit, and neither touches `hasAudio`.
+
 **Import note, because PLAN §1.2 makes this a hazard.** `graph.ts` currently imports `Clip` with
 `import type`. `clipHasVideo`/`clipHasAudio` are **values**, so this becomes a value import:
 

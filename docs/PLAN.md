@@ -2331,6 +2331,23 @@ apply to that single clip against the well background. Multi-track compositing, 
 transitions are **out of scope**, which is why the preview reads one `selectVideoClipIdAtFrame` and
 mounts one `<video>`. `Track.visible` selects which clip is topmost; it does not blend.
 
+> **Amended by docs/CREATIVE.md.** The `<video>` element is still one, and it still carries the
+> topmost visible video clip — that part is unchanged and `selectVideoClipIdAtFrame` is still the
+> selector. What is no longer true is "only":
+>
+> - **Titles draw as their own layers**, above and below that clip in `trackOrder` order
+>   (CREATIVE §5, `TitleClipLayer`). They are NOT gated on the clock clip, and that distinction is
+>   the highest-severity defect this build found: a title with anything above it drew nothing while
+>   the export composited it correctly. The clock clip is a fact about which element carries the
+>   playback clock and the sound; it was never a fact about what is on screen.
+> - **A cross dissolve draws the outgoing clip underneath** for the length of the ramp
+>   (`DissolveUnderlay`), and subtitles draw over everything (`SubtitleLayer`).
+> - **Transitions and per-clip grade and effects are live** on the drawn layers.
+>
+> What is still out of scope, and is now the one real preview/export divergence: **two pieces of
+> FOOTAGE are never blended in the preview.** The export overlays every clip on every visible video
+> track; the preview shows the upper one. README's "Known limitations" states it in those terms.
+
 The timeline may run its own rAF for *drag rendering* (transform writes), but that loop must never
 touch the store.
 

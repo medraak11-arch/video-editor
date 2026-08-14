@@ -1,0 +1,135 @@
+/* ---------------------------------------------------------------------------
+   fader.css — the gain control. A separate file from ui.css because the Fader
+   is a later addition to the primitive set and its geometry (a 56px track that
+   has to fit an 88px track head) is unlike anything else in that file.
+
+   No colour literal, no z-index literal, no literal duration. The one accent
+   here is the fill, and it is reinforcement: handle position carries the value,
+   the tick carries unity, and `aria-valuetext` carries both in words.
+--------------------------------------------------------------------------- */
+
+.ve-fader {
+  position: relative;
+  width: 56px;
+  height: 14px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  cursor: ew-resize;
+  touch-action: none;
+  /* The handle sits at 0% and 100% of the groove and is centred on that point,
+     so half of it hangs outside the box at each end. The padding is what stops
+     it being clipped by a track head's overflow. */
+  padding: 0 5px;
+  box-sizing: content-box;
+}
+
+.ve-fader:focus {
+  outline: none;
+}
+
+.ve-fader:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-sm);
+}
+
+.ve-fader[data-disabled='true'] {
+  cursor: not-allowed;
+}
+
+/* The groove is a WELL inset into the raised track head — fields and troughs
+   recede, they do not float (DESIGN.md §5). */
+.ve-fader-groove {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  /* The smallest radius in the scale. On a 4px box the UA clamps it to half the
+     height, which is the pill this wants — no off-scale literal needed. */
+  border-radius: var(--radius-clip);
+  background: var(--surface-well);
+  overflow: hidden;
+}
+
+.ve-fader-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  /* No transition: the fill tracks a pointer, and 120ms of easing on a value
+     being dragged reads as lag rather than as polish. Keyboard steps are
+     instant for the same reason, which is also the reduced-motion behaviour,
+     so there is nothing here for prefers-reduced-motion to undo. */
+}
+
+.ve-fader[data-disabled='true'] .ve-fader-fill {
+  background: var(--border-structural);
+}
+
+/* Unity, at the midpoint of a travel that is linear in amplitude. Drawn on the
+   groove so it is legible whether the fill has reached it or not: it sits above
+   the fill, in a tone that separates from BOTH --surface-well and --accent by
+   lightness, so it survives deuteranopia and it survives the fill passing under
+   it.
+
+   IT SITS UNDER THE GROOVE, NOT IN IT, and that is what makes it measurable.
+   Drawn inside, its backdrop alternates with the value: the well below unity,
+   the accent fill above it. Two backdrops at opposite ends of the lightness
+   ramp, and no single colour clears 3:1 against both — measured, in `signal`,
+   --text-ink reads 18.33 on the groove and 2.04 on the fill, so the mark
+   vanished for any gain above unity, which is precisely when "am I above
+   unity?" is the question being asked.
+
+   Outside, it has ONE backdrop in every theme at every value — the track head —
+   so it takes --text-ink exactly as the handle does, and the two read as one
+   system. Measured 11.72 / 12.14 / 13.43 across signal / instrument / daylight.
+
+   The bug this replaced: --text-ink on the groove measured 1.25 in `daylight`,
+   because that theme inverts the shell but keeps the well dark, so ink is a
+   DARK colour on a dark groove. That cost `daylight` one of the two non-hue
+   carriers of unity §1.4 names, and the one giving an ABSOLUTE reference rather
+   than a relative one — position tells you the handle moved, the tick tells you
+   it is home. Moving the mark fixes that case and the fill case together. */
+.ve-fader-tick {
+  position: absolute;
+  /* The groove is 4px, centred in the 14px control, so it ends at y=9. */
+  top: 10px;
+  height: 3px;
+  /* .ve-fader's padding is symmetric, so 50% of the padding box is also the
+     centre of the groove's content box — the mark and the travel share a mid. */
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--text-ink);
+}
+
+.ve-fader-handle {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 14px;
+  margin: -7px 0 0 -2px;
+  /* Clamped by the UA to half of the 4px width, same as the groove. */
+  border-radius: var(--radius-clip);
+  background: var(--text-ink);
+  pointer-events: none;
+}
+
+/* Unity gets a second, non-hue signal on the handle itself — a hairline collar
+   — so "this track is untouched" is readable at a glance across six track heads
+   without comparing handle positions to a tick. */
+.ve-fader[data-unity='true'] .ve-fader-handle {
+  box-shadow: 0 0 0 1px var(--border-hairline-strong);
+}
+
+.ve-fader[data-disabled='true'] .ve-fader-handle {
+  background: var(--text-muted);
+}
+
+.ve-fader:hover:not([data-disabled='true']) .ve-fader-handle,
+.ve-fader:focus-visible .ve-fader-handle {
+  height: 16px;
+  margin-top: -8px;
+  transition:
+    height var(--dur-feedback) var(--ease-out),
+    margin-top var(--dur-feedback) var(--ease-out);
+}

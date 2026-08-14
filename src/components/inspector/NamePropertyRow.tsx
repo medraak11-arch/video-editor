@@ -16,12 +16,25 @@
    `disabledReason` there, and a field that vanishes cannot carry one. Two clips
    cut from the SAME file are still one file, so they stay renameable — the rule
    is one media item at a time, not one clip.
+
+   A TITLE CLIP TAKES THE OTHER BRANCH ENTIRELY. CREATIVE §5.1: a title carries
+   `mediaId: ''`, and every media lookup must SKIP title clips rather than
+   resolve an empty id. This row is a media lookup — the one in the inspector —
+   and without the guard a title falls through to `items['']`, comes back
+   undefined and renders `Missing` with "that clip no longer has a media file",
+   which is a fabricated error about a clip that never had one. §9.4 names this
+   exact bug shape as having burned the project before.
+
+   So a title renames its CLIP through `renameClip`, which is the right target
+   anyway: `Clip.name` is what the timeline paints and what the panel heading
+   reads, and a title has no file behind it whose name could mean anything else.
 --------------------------------------------------------------------------- */
 
 import './inspector.css';
 import { useCallback, useEffect, useId, useMemo } from 'react';
 import type { ReactElement } from 'react';
 import type { Clip, MediaId } from '../../types/model';
+import { clipIsTitle } from '../../types/model';
 import { readStore, useEditorStore } from '../../state/store';
 import { MediaNameField } from '../media/MediaNameField';
 import { TextField } from '../ui';
@@ -46,11 +59,18 @@ export function NamePropertyRow({ clips }: NamePropertyRowProps): ReactElement {
     readStore().watchExportActivity();
   }, []);
 
+  /** Title clips contribute no mediaId — `''` is not an id to look up. */
   const mediaIds = useMemo<MediaId[]>(() => {
     const seen: MediaId[] = [];
-    for (const clip of clips) if (!seen.includes(clip.mediaId)) seen.push(clip.mediaId);
+    for (const clip of clips) {
+      if (clipIsTitle(clip)) continue;
+      if (!seen.includes(clip.mediaId)) seen.push(clip.mediaId);
+    }
     return seen;
   }, [clips]);
+
+  /** Exactly one clip, and it is a title: rename the clip, not a file. */
+  const titleClip = clips.length === 1 && clips[0] && clipIsTitle(clips[0]) ? clips[0] : null;
 
   const candidate = mediaIds.length === 1 ? mediaIds[0] : null;
   // A clip whose media was removed still holds its mediaId. The row keeps its
@@ -62,7 +82,24 @@ export function NamePropertyRow({ clips }: NamePropertyRowProps): ReactElement {
 
   return (
     <PropertyRow label="Name" htmlFor={fieldId}>
-      {only !== null ? (
+      {titleClip !== null ? (
+        <TextField
+          id={fieldId}
+          value={titleClip.name}
+          label="Name"
+          onChange={() => undefined}
+          onCommit={(next) => {
+            const trimmed = next.trim();
+            // An empty name would leave the clip and the panel heading blank
+            // with nothing to click back into. Reverting is the store's own
+            // behaviour for a rename it will not take.
+            if (trimmed === '' || trimmed === titleClip.name) return;
+            readStore().beginHistory('Rename clip');
+            readStore().renameClip(titleClip.id, trimmed);
+            readStore().commitHistory();
+          }}
+        />
+      ) : only !== null ? (
         <MediaNameField id={only} inputId={fieldId} label="Name" />
       ) : (
         // The same word NumericField uses for a selection that disagrees, so a

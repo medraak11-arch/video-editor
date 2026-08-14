@@ -604,6 +604,17 @@ blocked member. **Two changes, and then nothing else.**
 
 **(a) `planMove` closes its own moving set, exactly as `planTrim` does (§5.3).**
 
+> **AMENDED — this closure now lives in `planPlacement`, and `planMove` is one of three callers.**
+> CREATIVE §12 added insert-and-push, which needed every placement rule this section describes —
+> the link closure, the lock on origin and target, the kind match, the lane offset, `start >= 0` —
+> and differs from a move in exactly one respect: what it does about a collision. `planMove`
+> refuses; `planInsert` cascades the occupants to the right. So the shared part was extracted into
+> `planPlacement` and both planners call it, which is why the code below now sits there rather than
+> in `planMove`. The rule and the reasoning are unchanged; a second copy of the placement rules is
+> precisely how the ghost and the drop would start disagreeing about which drops are even legal.
+> The third caller is `insertSelectionAtPlayhead`, the `V` command, which reaches it through
+> `insertClips`.
+
 ```ts
 // timelineSlice.ts — planMove, first line of the moving-set build at :440.
 // The two dry-run planners have ONE rule between them: the caller names clips,

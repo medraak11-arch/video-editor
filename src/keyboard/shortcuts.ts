@@ -61,6 +61,21 @@ export type ShortcutId =
   // from the application rather than only from the README.
   | 'edit.link'
   | 'edit.unlink'
+  // CREATIVE §5. The timeline toolbar button and the track context menu both
+  // render <ShortcutHint id="edit.addTitle" />, and PRODUCT.md principle 3 puts
+  // the binding on the control rather than in a help page — so the row has to
+  // exist here for either of them to be able to teach it.
+  | 'edit.addTitle'
+  // CREATIVE §6.6. Subtitle authoring is a typing loop, so the one thing it
+  // cannot afford is a reach for the mouse between every line. The row is here
+  // for the same reason `edit.addTitle` is: the subtitles group renders
+  // <ShortcutHint id="subtitle.addCue" />, and a key taught by a control it is
+  // not registered against is the drift this file exists to prevent.
+  | 'subtitle.addCue'
+  // CREATIVE §12. The keyboard half of insert. The clip context menu renders
+  // <ShortcutHint id="edit.insertAtPlayhead" />, so the row is what lets that
+  // item teach its key instead of the key being folklore.
+  | 'edit.insertAtPlayhead'
   | 'help.shortcuts';
 
 /** The name of the function `useShortcuts` dispatches to. One per registry row. */
@@ -103,8 +118,33 @@ export interface ShortcutDef {
   /** Sentence case, imperative: 'Split at playhead'. */
   label: string;
   scope: ShortcutScope;
-  handler: ShortcutHandlerName;
+  /**
+   * ABSENT when the row's own REGION dispatches it instead of the global
+   * table — see `edit.addTitle`.
+   *
+   * There is already one shape of this in the build: `onPlayheadKeyDown`
+   * consumes `nav.stepBack` / `nav.stepForward` and calls `preventDefault` so
+   * the global binding does not double-fire. The difference here is that the
+   * region is the ONLY dispatcher, because the command needs state that the
+   * global dispatcher deliberately does not read — which clip inside the
+   * timeline holds focus.
+   *
+   * The registry still carries the row, and that is the point: it is what
+   * `ShortcutHint` reads, so the toolbar button and the context-menu item teach
+   * the key (PRODUCT.md principle 3), and it is what the shortcut overlay
+   * lists. A key taught by a control it is not registered against is exactly
+   * the drift this file exists to prevent.
+   */
+  handler?: ShortcutHandlerName;
 }
+
+/**
+ * A row the GLOBAL listener dispatches. `SHORTCUTS_BY_COMBO` holds only these,
+ * so `useShortcuts` reads a non-optional `handler` and the HANDLERS table stays
+ * exhaustive over `ShortcutHandlerName` — a region-dispatched row cannot leave
+ * a hole in it.
+ */
+export type DispatchableShortcutDef = ShortcutDef & { handler: ShortcutHandlerName };
 
 /* ------------------------------------------------------------------ registry
    Scope is focus containment, not hover (PLAN §8.10): a non-global row fires
@@ -152,6 +192,48 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   // Ctrl+L must not mint a new LinkId sixty times a second.
   { id: 'edit.link', keys: ['Ctrl+L'], label: 'Link selected clips', scope: 'timeline', handler: 'linkClips' },
   { id: 'edit.unlink', keys: ['Ctrl+Shift+L'], label: 'Unlink selected clips', scope: 'timeline', handler: 'unlinkClips' },
+  // CREATIVE §5. A bare `T`, not the Ctrl+T that Premiere uses for a new title:
+  // Ctrl+T is "new tab" in Chromium and cannot be preventDefault-ed in the
+  // browser fixture the timeline is developed against, so it would be a binding
+  // that works only in the packaged app. `T` is unclaimed — the registry's other
+  // alpha keys are J/K/L, I/O, S and M — and it is timeline-scoped like every
+  // other structural edit, so `T` in a filename field or the media rail cannot
+  // put a title on the timeline.
+  //
+  // NOT repeatable: holding T must not stack sixty titles at the playhead.
+  //
+  // DISPATCH: region, not global — it carries no `handler`, and the timeline
+  // dispatches it from `useRegionShortcuts` on `.tl-root`. It is region-owned
+  // because the target track is decided from which clip inside the timeline
+  // holds focus, and focus WITHIN a region is the one thing the global
+  // dispatcher deliberately does not read.
+  { id: 'edit.addTitle', keys: ['T'], label: 'Add title at playhead', scope: 'timeline' },
+  // CREATIVE §6.6. Region-dispatched, the second row to be (see `handler`).
+  //
+  // `C` for cue, and it is free: the registry's other alpha keys are J/K/L,
+  // I/O, S, M and T, and `Ctrl+C` normalises to a different combo string, so
+  // copy can never collide with it.
+  //
+  // Timeline-scoped rather than global because it reads the playhead and writes
+  // a cue against it — that is a timeline act, and `C` typed into a filename
+  // field or the media rail must not add one. NOT repeatable, and that one is
+  // load-bearing: holding C must not lay sixty cues on one frame.
+  { id: 'subtitle.addCue', keys: ['C'], label: 'Add subtitle cue at playhead', scope: 'timeline' },
+  // CREATIVE §12. Region-dispatched, the third row to be.
+  //
+  // `V` is Avid's SPLICE-IN, which is this operation exactly — place the clip
+  // here and push what follows to the right — and it is the closest convention
+  // available. Premiere's insert is `,`, and `,` is spoken for: it is half of
+  // the nudge pair, which stays an ordinary move on purpose (§12.2 spent a
+  // section making sure the most casual key in the app cannot rearrange the
+  // timeline). Final Cut's `W` was the other candidate; `V` wins on the term
+  // matching the behaviour including the push. Premiere's own `V` is the
+  // selection tool, which this app has no equivalent of, so no muscle memory is
+  // being overwritten.
+  //
+  // NOT repeatable: holding V must not insert the selection over and over, each
+  // time pushing the track further right.
+  { id: 'edit.insertAtPlayhead', keys: ['V'], label: 'Insert selection at playhead', scope: 'timeline' },
   { id: 'edit.undo', keys: ['Ctrl+Z'], label: 'Undo', scope: 'global', handler: 'undo' },
   { id: 'edit.redo', keys: ['Ctrl+Shift+Z'], label: 'Redo', scope: 'global', handler: 'redo' },
   { id: 'edit.clearSelection', keys: ['Escape'], label: 'Clear selection', scope: 'global', handler: 'clearSelection' },
@@ -184,14 +266,39 @@ export const SHORTCUT_BY_ID: Record<ShortcutId, ShortcutDef> = SHORTCUTS.reduce(
   {} as Record<ShortcutId, ShortcutDef>,
 );
 
-/** Every combo the registry binds, mapped to the rows that claim it. */
-export const SHORTCUTS_BY_COMBO: ReadonlyMap<string, readonly ShortcutDef[]> = (() => {
+/** Every combo the registry binds AT ALL, mapped to the rows that claim it.
+ *
+ *  This is the map to reach for when the question is "is this combo taken" —
+ *  a region-dispatched row claims its keys just as hard as a global one does,
+ *  and a clash with `T` is a clash whether or not the global listener is the
+ *  one that would have fired it. */
+export const SHORTCUT_COMBOS: ReadonlyMap<string, readonly ShortcutDef[]> = (() => {
   const map = new Map<string, ShortcutDef[]>();
   for (const def of SHORTCUTS) {
     for (const combo of def.keys) {
       const list = map.get(combo);
       if (list) list.push(def);
       else map.set(combo, [def]);
+    }
+  }
+  return map;
+})();
+
+/**
+ * The GLOBAL listener's dispatch table: the same map, restricted to the rows
+ * that name a handler. A region-dispatched row is absent on purpose — its
+ * region has already consumed the keystroke and called `preventDefault`, so
+ * listing it here would be a second dispatcher for one command.
+ */
+export const SHORTCUTS_BY_COMBO: ReadonlyMap<string, readonly DispatchableShortcutDef[]> = (() => {
+  const map = new Map<string, DispatchableShortcutDef[]>();
+  for (const def of SHORTCUTS) {
+    if (def.handler === undefined) continue;
+    const dispatchable = def as DispatchableShortcutDef;
+    for (const combo of def.keys) {
+      const list = map.get(combo);
+      if (list) list.push(dispatchable);
+      else map.set(combo, [dispatchable]);
     }
   }
   return map;

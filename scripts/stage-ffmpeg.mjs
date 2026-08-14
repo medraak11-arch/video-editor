@@ -211,3 +211,81 @@ if (missingOptions.length > 0) {
 }
 
 console.log(`stage-ffmpeg: required options present — ${REQUIRED_FFMPEG_OPTIONS.map((o) => '-' + o).join(', ')}`);
+
+/* ---------------------------------------------------------------- filters
+   The same argument as the options above, one level down. An option is missing
+   when the BUILD is wrong; a filter is missing when the build was CONFIGURED
+   wrong — and a misconfigured build is harder to spot, because it answers
+   `-version` perfectly and encodes an ordinary export perfectly. It fails only
+   on the feature that needed the library nobody enabled.
+
+   `subtitles` is the one that earns this whole block. It is the only entry here
+   that requires an external library (libass), so it is the canary: a build
+   without libass produces a working editor whose burn-in silently has no
+   subtitles in it, discovered by a user, after a release. Everything else here
+   is built in to any reasonable ffmpeg and costs nothing to assert alongside it.
+
+   CREATIVE.md §7. */
+
+const REQUIRED_FFMPEG_FILTERS = [
+  // Grade — CREATIVE §2, §2.4. The export does the tone curve in planar RGB with
+  // `lutrgb`, NOT with `eq`: `eq` works on limited-range Y, so its brightness
+  // moved a pixel by ~58/255 where the shared `gradeMath` says 51, and its
+  // saturation=0 produced 86,88,85 rather than a neutral grey. `eq` is kept in
+  // this list anyway — it is not a dead entry, because a build without it is a
+  // build whose filter set has been cut down, and that is worth knowing before
+  // the first export rather than after.
+  'eq',
+  'lutrgb', // grade: contrast + brightness, the feComponentTransfer twin
+  'colorchannelmixer', // grade: saturation × temperature as one 3×3, and opacity's alpha
+  'gblur', // effects — §3
+  'unsharp',
+  'vignette',
+  'hflip',
+  'vflip',
+  'fade', // transitions — §4, alpha ramps
+  'afade',
+  'subtitles', // burn-in — §6.3. THE LIBASS CANARY.
+];
+
+let filterList = '';
+try {
+  filterList = execFileSync(ffmpegPath, ['-hide_banner', '-filters'], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+} catch (error) {
+  filterList = String(error?.stdout || '');
+}
+
+// `-filters` prints one filter per line as `TFF name  in->out  description`.
+// Matched on the NAME COLUMN, not with `includes`: `fade` appears inside
+// `afade`, and every filter name appears inside somebody's description.
+const filterNames = new Set(
+  filterList
+    .split('\n')
+    .map((line) => /^\s*[TSC.]{1,3}\s+(\S+)\s/.exec(line))
+    .filter(Boolean)
+    .map((m) => m[1]),
+);
+
+const missingFilters = REQUIRED_FFMPEG_FILTERS.filter((f) => !filterNames.has(f));
+if (missingFilters.length > 0) {
+  console.error(`\nstage-ffmpeg: the staged ffmpeg is missing ${missingFilters.length > 1 ? 'filters' : 'a filter'} this app requires.\n`);
+  for (const f of missingFilters) console.error(`  ${f}`);
+  console.error(`\n  staged: ${ffmpegPath}`);
+  console.error(`  version: ${(filterList.split('\n')[0] || '').trim() || 'unknown'}`);
+  console.error(`  filters found: ${filterNames.size}\n`);
+  if (missingFilters.includes('subtitles')) {
+    console.error('`subtitles` needs libass. A build without it encodes every ordinary export');
+    console.error('perfectly and burns in NO subtitles at all — a failure that reaches a user');
+    console.error('rather than this script. Use a build configured with --enable-libass.\n');
+  }
+  rmSync(DEST, { recursive: true, force: true });
+  process.exit(1);
+}
+
+console.log(
+  `stage-ffmpeg: required filters present — ${REQUIRED_FFMPEG_FILTERS.length} of ${filterNames.size}, including subtitles (libass)`,
+);

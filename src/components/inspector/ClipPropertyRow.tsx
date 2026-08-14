@@ -24,6 +24,17 @@
    assignments and stay continuous.
 
    Mixed values render as the literal word `Mixed`, never as a blank field.
+
+   NUMERIC ONLY, AND THE TYPE SAYS SO. `ClipProperties` stopped being all-number
+   when CREATIVE §3 added `flipH` and `flipV`, so `field: keyof ClipProperties`
+   started admitting a key whose value is a boolean — which `toDisplay`,
+   `min/max/step`, drag-scrub and `toFixed` all have no meaning for. The fix is
+   not a cast at the two lines that stopped compiling: a boolean is not a number
+   this control could render if only the types agreed, it is a different control
+   (ClipToggleRow). So `field` narrows to the numeric keys, the boolean keys get
+   their own row, and `keyof ClipProperties` appears in neither — adding a
+   sixteenth property of either kind lands in exactly one of the two unions
+   without anybody editing this file.
 --------------------------------------------------------------------------- */
 
 import './inspector.css';
@@ -36,10 +47,25 @@ import type { Clip, ClipProperties } from '../../types/model';
 import { PropertyRow } from './PropertyRow';
 import { describeMoveFailure } from './failure';
 
+/**
+ * The keys of `ClipProperties` whose value is a number — everything a
+ * NumericField can hold. Derived, never listed: a new numeric property joins
+ * this union by existing, and a property that changes type moves between the
+ * two unions and breaks at its call site rather than at runtime.
+ */
+export type NumericClipProperty = {
+  [K in keyof ClipProperties]: ClipProperties[K] extends number ? K : never;
+}[keyof ClipProperties];
+
+/** The keys whose value is a boolean. `flipH` and `flipV` today. */
+export type BooleanClipProperty = {
+  [K in keyof ClipProperties]: ClipProperties[K] extends boolean ? K : never;
+}[keyof ClipProperties];
+
 export interface ClipPropertyRowProps {
   /** The current selection. Never empty when this row is rendered. */
   clips: readonly Clip[];
-  field: keyof ClipProperties;
+  field: NumericClipProperty;
   /** Visible copy, sentence case. */
   label: string;
   /** Undo-stack label, sentence case imperative: 'Adjust opacity'. */
@@ -128,6 +154,10 @@ export function ClipPropertyRow({
 
   const apply = useCallback(
     (shown: number): MutationResult => {
+      // A computed key widens to an index signature, which is the only reason
+      // this needs an assertion. It is SOUND rather than papered over: `field`
+      // is a NumericClipProperty and `fromDisplay` returns a number, so the
+      // pair is exactly one of `Partial<ClipProperties>`'s numeric members.
       const patch = { [field]: fromDisplay(shown) } as Partial<ClipProperties>;
       const result = readStore().updateClipProperties(ids, patch);
       if (result.ok) wrote.current = true;

@@ -16,8 +16,10 @@
    see below.
 --------------------------------------------------------------------------- */
 
-import type { ExportDocument, ExportSource } from '../../types/api';
+import type { ExportDocument, ExportSource, ExportTitle } from '../../types/api';
 import type { Clip, MediaId, Track } from '../../types/model';
+import { clipIsTitle, clipUsesMedia, DEFAULT_SUBTITLE_STYLE } from '../../types/model';
+import { drawTitle } from '../../lib/titleRaster';
 import type { StoreState } from '../../state/types';
 
 /**
@@ -53,6 +55,11 @@ function referencedSources(s: StoreState, clips: readonly Clip[]): ExportSource[
   const seen = new Set<MediaId>();
   const out: ExportSource[] = [];
   for (const clip of clips) {
+    // A title clip carries `mediaId: ''` and resolves NOTHING (CREATIVE §5.1).
+    // `clipUsesMedia` is the predicate that exists for this; without it every
+    // title would produce a lookup miss that the graph builder reports as
+    // `source-missing`, and one title would refuse the whole export.
+    if (!clipUsesMedia(clip)) continue;
     if (seen.has(clip.mediaId)) continue;
     seen.add(clip.mediaId);
     const item = s.items[clip.mediaId];
@@ -74,7 +81,67 @@ function referencedSources(s: StoreState, clips: readonly Clip[]): ExportSource[
   return out;
 }
 
-export function buildExportDocument(s: StoreState): ExportDocument {
+/* --------------------------------------------------- CREATIVE §5.2 titles ---
+   ONE rasteriser, used twice. The preview draws a title with `drawTitle` onto a
+   <canvas> over the video; the export draws it with THE SAME FUNCTION onto an
+   OffscreenCanvas at PROJECT resolution, right here, and ships the PNG. Main
+   feeds it to ffmpeg as an ordinary `-loop 1` input.
+
+   That is why this file is now async, and it is worth it: the alternative is
+   `drawtext`, which means font resolution, `:` and `\` escaping inside a filter
+   script, no web font, no kerning parity, and a preview drawn by Chromium that
+   will never agree with a file drawn by freetype — a disagreement that is
+   invisible at caption size and glaring at title size, which is the size titles
+   are. Rasterising costs one input per title clip and a few hundred KB of IPC,
+   and buys a title that is pixel for pixel what the user was looking at.
+
+   ONE ENTRY PER TITLE CLIP IN THE PROJECT, not per clip in range: the builder
+   filters by range, and an unused entry costs an unread map lookup.
+
+   A title that cannot be rasterised is DROPPED rather than thrown: the graph
+   omits a title clip with no raster, so the failure costs one title and not the
+   export. `OffscreenCanvas` is absent from no browser this app runs in, but it
+   is absent from a jsdom test environment, which is the realistic way to arrive
+   here without one. */
+
+/** ArrayBuffer → base64, WITHOUT a `data:` prefix (api.ts, ExportTitle.png). */
+function toBase64(bytes: Uint8Array): string {
+  // Chunked: `String.fromCharCode(...bytes)` blows the argument limit on a
+  // 4K title, which is several megabytes of pixels before PNG compression.
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+async function rasteriseTitles(s: StoreState, clips: readonly Clip[]): Promise<ExportTitle[]> {
+  const out: ExportTitle[] = [];
+  if (typeof OffscreenCanvas === 'undefined') return out;
+
+  const w = Math.max(2, Math.round(s.width));
+  const h = Math.max(2, Math.round(s.height));
+
+  for (const clip of clips) {
+    if (!clipIsTitle(clip) || clip.title === undefined) continue;
+    try {
+      const canvas = new OffscreenCanvas(w, h);
+      const ctx = canvas.getContext('2d');
+      if (ctx === null) continue;
+      drawTitle(ctx, clip.title, w, h);
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      out.push({ clipId: clip.id, png: toBase64(bytes), width: w, height: h });
+    } catch {
+      // Nothing to say to the user here: the export continues without this
+      // title, and a title that vanishes is visible in the file itself.
+    }
+  }
+  return out;
+}
+
+export async function buildExportDocument(s: StoreState): Promise<ExportDocument> {
   const clips = Object.values(s.clips);
   return {
     fps: s.fps,
@@ -83,5 +150,10 @@ export function buildExportDocument(s: StoreState): ExportDocument {
     tracks: compositeTracks(s),
     clips,
     sources: referencedSources(s, clips),
+    titles: await rasteriseTitles(s, clips),
+    // Project-level and unfiltered, exactly as the clips are: the builder
+    // offsets them by the export range and clips them to it, in one place.
+    subtitles: Object.values(s.subtitles ?? {}).sort((a, b) => a.start - b.start || a.end - b.end),
+    subtitleStyle: s.subtitleStyle ?? DEFAULT_SUBTITLE_STYLE,
   };
 }

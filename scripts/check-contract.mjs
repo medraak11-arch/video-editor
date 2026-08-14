@@ -78,6 +78,58 @@ const ACCENT_ALLOWED = [
   'splash/graphic.ts',
 ];
 
+// ------------------------------------------------------- VIDEO PIXELS, NOT UI
+// The hardcoded-colour rule defends ONE thing: that interface colour comes from
+// the theme token layer, so switching theme moves every surface the user looks
+// at. Two sites are categorically outside that promise, and exempting them is
+// not a loosening of the rule — it is the rule's own scope, stated.
+//
+//   1. src/lib/titleRaster.ts builds `rgba(...)` from a TitleSpec the user
+//      authored, and paints it into a <canvas> that is then encoded into an
+//      exported file. Those bytes leave the app. A title burned into an MP4 that
+//      changed colour because the editor was in `daylight` would be a defect of
+//      the first order — the file must be a function of the project, never of
+//      the chrome around it.
+//   2. DEFAULT_TITLE.color / .background and DEFAULT_SUBTITLE_STYLE.color are
+//      the seed values of that same user data. They are '#ffffff' on '#000000'
+//      because that is what a caption is on video, everywhere, and because they
+//      are serialised into the .veproj and re-read on a different machine. A
+//      token would resolve to nothing outside a DOM and to the wrong thing
+//      inside one.
+//
+// Written so it CANNOT silently widen. Each entry pins BOTH a line shape and an
+// exact count: a real theme colour in titleRaster.ts does not match `rgba`, and
+// a fourth spec default — or a fifth rgba site — breaks the count and fails the
+// gate with "stale exemption", forcing whoever added it to say which it is.
+const PIXEL_COLOUR_EXEMPT = [
+  {
+    file: 'src/lib/titleRaster.ts',
+    // The rgba() builder, its doc comment, and the two fillStyle writes it feeds.
+    shape: /rgba/,
+    expect: 5,
+  },
+  {
+    file: 'src/types/model.ts',
+    // Exactly the TitleSpec / SubtitleStyle default colours, nothing else in the file.
+    shape: /^\s*(?:color|background):\s*'#[0-9a-fA-F]{6}',$/,
+    expect: 3,
+  },
+];
+
+/** Hits actually granted, per entry, so a stale exemption is a failure not a gap. */
+const exemptUsed = PIXEL_COLOUR_EXEMPT.map(() => 0);
+
+function pixelColourExempt(file, line) {
+  for (let i = 0; i < PIXEL_COLOUR_EXEMPT.length; i += 1) {
+    const e = PIXEL_COLOUR_EXEMPT[i];
+    if (rel(file) !== e.file) continue;
+    if (!e.shape.test(line)) return false;
+    exemptUsed[i] += 1;
+    return true;
+  }
+  return false;
+}
+
 for (const f of files) {
   const src = readFileSync(f, 'utf8');
   const lines = src.split('\n');
@@ -88,7 +140,7 @@ for (const f of files) {
     const code = line.replace(/\/\/.*$/, '').replace(/&#\w+;/g, '');
 
     // 1. colour literals outside tokens.css
-    if (!isTokens(f)) {
+    if (!isTokens(f) && !pixelColourExempt(f, line)) {
       if (/#[0-9a-fA-F]{3,8}\b/.test(code) && !/#[0-9a-fA-F]*[g-zG-Z]/.test(code))
         fail(f, n, 'hardcoded-colour', line.trim().slice(0, 90));
       if (/\b(rgba?|hsla?)\s*\(/.test(code))
@@ -122,6 +174,23 @@ for (const f of files) {
   if (/var\(--accent\b/.test(src) && !ACCENT_ALLOWED.some((a) => rel(f).includes(a)))
     fail(f, 0, 'accent-budget', 'uses --accent outside the closed budget — verify against PLAN §7.4');
 }
+
+// ---------------------------------------------------------------- exemption audit
+// The counts are asserted in BOTH directions. Too few means an exemption is
+// stale and is now covering nothing — delete it. Too many means a new colour
+// literal walked in under cover of one, which is the exact failure mode an
+// exemption list has, and the whole reason these are counted rather than named.
+PIXEL_COLOUR_EXEMPT.forEach((e, i) => {
+  if (exemptUsed[i] === e.expect) return;
+  fail(
+    join(ROOT, e.file),
+    0,
+    'stale-exemption',
+    `${e.file} was exempted for ${exemptUsed[i]} colour literal(s), not ${e.expect}. ` +
+      'These are VIDEO PIXELS, not interface colour — if the new one is too, raise the count ' +
+      'deliberately; if it is chrome, it is a real violation and the exemption must not cover it.',
+  );
+});
 
 // ---------------------------------------------------------------- reduced motion
 if (!/prefers-reduced-motion/.test(tokensCss)) {

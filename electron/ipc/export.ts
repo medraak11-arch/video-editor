@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { constants as FS, rmSync } from 'node:fs';
-import { access, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CH, isAudioOnlyCodec } from '../../src/types/api';
@@ -32,6 +32,8 @@ import type {
   ExportProgressEvent,
   ExportRequest,
 } from '../../src/types/api';
+import type { SubtitleCue } from '../../src/types/model';
+import { formatSrt } from '../../src/lib/srt';
 import { buildExportGraph, CONTAINER, ERR } from '../export/graph';
 import { ffmpegCommand } from '../ffmpeg';
 
@@ -60,12 +62,34 @@ interface Job {
   spawnError: ExportError | null;
   partPath: string; // path.join(folder, `.${filename}.${ext}.part`)
   finalPath: string; // path.join(folder, `${filename}.${ext}`)
-  scriptPath: string; // path.join(tmpdir(), `ve-export-${id}.txt`)
+  /**
+   * A DIRECTORY of this job's own, not a bare temp file, and it is what ffmpeg
+   * is spawned with as its `cwd`.
+   *
+   * Burn-in needs the SubRip file named RELATIVELY inside the filter script
+   * (CREATIVE §6.3): an absolute Windows path there has to be written
+   * `C\:/Users/…`, and this machine's paths carry spaces and a drive letter,
+   * which is exactly the shape that breaks. A relative name has nothing to
+   * escape — and a relative name only resolves if the process runs somewhere
+   * known. Giving the job its own directory rather than pointing `cwd` at the
+   * whole of `tmpdir()` keeps that guarantee narrow, keeps two jobs' `subs.srt`
+   * apart, and makes cleanup one recursive remove.
+   */
+  jobDir: string; // path.join(tmpdir(), `ve-export-${id}`)
+  scriptPath: string; // path.join(jobDir, 'filter.txt')
   framesTotal: number;
   durationSeconds: number;
   lastPhase: Phase;
   lastProgress: number;
   lastFramesDone: number;
+  /**
+   * CREATIVE §4.3 — what the build had to change about what the user authored.
+   * Held from `buildExportGraph` until the next event actually goes out, then
+   * cleared: the contract says the FIRST event after the graph is built carries
+   * them and that they are not repeated. Null, never `[]`, so the field is
+   * absent rather than empty on every ordinary export.
+   */
+  pendingNotices: string[] | null;
   stderrTail: string;
   onSenderGone: (() => void) | null;
 }
@@ -82,6 +106,13 @@ const newJobId = (): string => `exp_${Date.now().toString(36)}_${randomBytes(4).
  */
 const removeFile = (p: string): Promise<void> =>
   rm(p, { force: true, maxRetries: 3, retryDelay: 100 }).then(
+    () => undefined,
+    () => undefined,
+  );
+
+/** The job's whole scratch directory: filter script, title PNGs, subs.srt. */
+const removeDir = (p: string): Promise<void> =>
+  rm(p, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 }).then(
     () => undefined,
     () => undefined,
   );
@@ -157,10 +188,15 @@ function emit(
     framesTotal: job.framesTotal,
     ...(extra?.error ? { message: extra.error.message, error: extra.error } : {}),
     ...(extra?.outputPath ? { outputPath: extra.outputPath } : {}),
+    ...(job.pendingNotices ? { notices: job.pendingNotices } : {}),
   };
 
   if (job.sender.isDestroyed()) return;
   job.sender.send(CH.exportProgress, event);
+  // Cleared only once the event is actually on the wire. The suppression branch
+  // above returns before this, so a notice cannot be swallowed by a duplicate
+  // (phase, progress, framesDone) triple — it rides the next event that is not.
+  job.pendingNotices = null;
 }
 
 /**
@@ -184,7 +220,7 @@ function settle(
     }
     job.onSenderGone = null;
   }
-  void removeFile(job.scriptPath);
+  void removeDir(job.jobDir);
 
   const payload: TerminalExtra | undefined =
     extra === undefined
@@ -250,7 +286,12 @@ function validateRequest(req: unknown): { ok: true; req: ExportRequest } | { ok:
   if (typeof req !== 'object' || req === null) return { ok: false, error: ERR['invalid-request'] };
   const r = req as Partial<ExportRequest>;
 
-  if (typeof r.folder !== 'string' || r.folder.trim() === '')
+  // ABSOLUTE, and now load-bearing rather than merely expected: ffmpeg is
+  // spawned with `cwd` set to the job's scratch directory (CREATIVE §6.3), so a
+  // relative output folder would resolve inside the temp directory and the file
+  // would appear nowhere the user can find it. The picker only ever produces an
+  // absolute path; this is the boundary that says so.
+  if (typeof r.folder !== 'string' || r.folder.trim() === '' || !path.isAbsolute(r.folder))
     return { ok: false, error: ERR['output-not-writable'] };
   if (!isPositiveInt(r.width) || !isPositiveInt(r.height))
     return { ok: false, error: ERR['invalid-request'] };
@@ -389,6 +430,90 @@ async function onClose(job: Job, code: number | null): Promise<void> {
   }
 }
 
+/* ------------------------------------------- CREATIVE §5.2 title rasters ---
+   The renderer already drew every title clip with `src/lib/titleRaster.ts` —
+   the SAME function that drew the preview — onto an OffscreenCanvas at project
+   resolution, and sent the PNG as base64. Main's whole job is to turn that back
+   into bytes on disk so the graph can feed it as an ordinary `-loop 1` input.
+   Nothing here knows what a title looks like, which is the point: the exported
+   title is pixel for pixel what the user was looking at.
+
+   A malformed or unwritable entry costs ONE title, never the export. */
+
+async function writeTitlePngs(
+  job: Job,
+  doc: ExportDocument | undefined,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const titles = doc && Array.isArray(doc.titles) ? doc.titles : [];
+  let index = 0;
+  for (const t of titles) {
+    index += 1;
+    if (typeof t?.clipId !== 'string' || t.clipId === '' || typeof t.png !== 'string') continue;
+    // Named by INDEX, not by clip id: an id is a nanoid over an alphabet that
+    // happens to be filename-safe today, and a filename is not the place to bet
+    // on that staying true.
+    const file = path.join(job.jobDir, `title-${index}.png`);
+    try {
+      await writeFile(file, Buffer.from(t.png, 'base64'));
+      out[t.clipId] = file;
+    } catch (e) {
+      console.error('[export] a title could not be written, so it was left out', e);
+    }
+  }
+  return out;
+}
+
+/* ------------------------------------------- CREATIVE §6.3 subtitle burn-in */
+
+/**
+ * Writes `subs.srt` into the job's scratch directory — the SAME directory as the
+ * filter script and the one ffmpeg is spawned in — and reports whether it is
+ * there.
+ *
+ * WHO DECIDES is the thing to keep straight, and it is THIS FUNCTION.
+ * `buildExportGraph` is a pure module: it opens nothing and writes nothing, so
+ * "is there a burn-in" is the same question as "did main put a file there", and
+ * a builder handed no `subtitlesFile` correctly emits no filter. Deciding it
+ * here and handing the answer over as a path is what stops the graph from ever
+ * naming a file that does not exist.
+ *
+ * The cues are offset by the export range's start and clipped to its end, so an
+ * in/out export carries the captions that belong to it at the times it actually
+ * runs at. `formatSrt` does the offsetting; this only decides which cues are in.
+ */
+async function writeSubtitles(job: Job, req: ExportRequest): Promise<string | undefined> {
+  if (req.burnSubtitles !== true) return undefined;
+  // No picture to burn into. The setting is retained and ignored, exactly as
+  // `width`/`height`/`fps` are for an audio codec.
+  if (isAudioOnlyCodec(req.codec)) return undefined;
+
+  const doc = req.document;
+  const cues = doc && Array.isArray(doc.subtitles) ? doc.subtitles : [];
+  if (cues.length === 0 || !doc || !(doc.fps > 0)) return undefined;
+
+  const rangeEnd = req.startFrame + req.durationFrames;
+  const inRange: SubtitleCue[] = cues
+    .filter((c) => c && c.end > req.startFrame && c.start < rangeEnd)
+    .map((c) => (c.end > rangeEnd ? { ...c, end: rangeEnd } : c));
+
+  const text = formatSrt(inRange, doc.fps, req.startFrame);
+  if (text.trim() === '') return undefined;
+
+  try {
+    // UTF-8, no BOM — for the same reason the filter script is (EXPORT §1.1),
+    // and because libass reads a BOM as part of the first cue's index.
+    await writeFile(path.join(job.jobDir, SUBTITLE_FILE), text, 'utf8');
+  } catch (e) {
+    console.error('[export] the subtitle file could not be written, so nothing was burned in', e);
+    return undefined;
+  }
+  // RELATIVE, and that is the whole reason for the `cwd` below.
+  return SUBTITLE_FILE;
+}
+
+const SUBTITLE_FILE = 'subs.srt';
+
 /* ------------------------------------------------------------- §2.3 prepare */
 
 /** True when the job was cancelled before it spawned; settles and stops the sequence. */
@@ -442,11 +567,32 @@ async function runJob(job: Job, rawReq: unknown): Promise<void> {
     if (cancelledBeforeSpawn(job)) return;
     emit(job, 'preparing', 0.35, 0);
 
+    // The scratch directory, and everything the graph will have to NAME rather
+    // than compute. It is made before the graph is built because the builder is
+    // a pure module: it joins no paths and writes no files, so whatever it
+    // references has to exist and be handed to it (BuildPaths).
+    await mkdir(job.jobDir, { recursive: true });
+    const titlePngs = await writeTitlePngs(job, req.document);
+    // Undefined whenever there is nothing to burn — including when the write
+    // itself failed, so the graph can never reference a `subs.srt` that is not
+    // there. The export then loses its captions rather than failing to start.
+    const subtitlesFile = await writeSubtitles(job, req);
+
     const built = buildExportGraph(req, {
       scriptPath: job.scriptPath,
       outputPath: job.partPath,
+      titlePngs,
+      subtitlesFile,
     });
     if (!built.ok) return settle(job, 'error', built.error);
+    // CREATIVE §4.3, §4.3d — a dissolve the build could honour only in part was
+    // exported as a fade. Not a failure and not a reason to stop, but not silent
+    // either: it goes to the renderer on the next event AND to the log, because
+    // the two readers are different people at different times.
+    if (built.graph.notices.length > 0) {
+      job.pendingNotices = built.graph.notices;
+      for (const note of built.graph.notices) console.warn(`[export] ${note}`);
+    }
     job.framesTotal = built.graph.framesTotal;
     job.durationSeconds = built.graph.durationSeconds;
     if (cancelledBeforeSpawn(job)) return;
@@ -475,7 +621,15 @@ async function runJob(job: Job, rawReq: unknown): Promise<void> {
     // §3.3(a) — the spawn and the assignment are ONE statement, so no cancel can
     // interleave between the process existing and job.child referencing it.
     try {
-      job.child = spawn(ffmpegBinary(), built.graph.args, { windowsHide: true });
+      // `cwd` is what makes `subtitles=filename=subs.srt` resolve (CREATIVE
+      // §6.3). It is safe for everything else because every other path in
+      // `args` is absolute — the sources came from `MediaItem.path`, the script
+      // and the PNGs from `job.jobDir`, and the output from `path.join(folder,
+      // …)` with `folder` checked absolute in validation.
+      job.child = spawn(ffmpegBinary(), built.graph.args, {
+        windowsHide: true,
+        cwd: job.jobDir,
+      });
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       return settle(
@@ -536,7 +690,7 @@ function killEverythingSync(): void {
       /* quitting anyway */
     }
     try {
-      rmSync(job.scriptPath, { force: true });
+      rmSync(job.jobDir, { force: true, recursive: true });
     } catch {
       /* quitting anyway */
     }
@@ -566,12 +720,14 @@ export function registerExportIpc(ipcMain: IpcMain): void {
         spawnError: null,
         partPath: '',
         finalPath: '',
-        scriptPath: path.join(tmpdir(), `ve-export-${id}.txt`),
+        jobDir: path.join(tmpdir(), `ve-export-${id}`),
+        scriptPath: path.join(tmpdir(), `ve-export-${id}`, 'filter.txt'),
         framesTotal: 1,
         durationSeconds: 0,
         lastPhase: 'preparing',
         lastProgress: -1,
         lastFramesDone: -1,
+        pendingNotices: null,
         stderrTail: '',
         onSenderGone: null,
       };

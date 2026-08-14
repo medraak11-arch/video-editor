@@ -26,7 +26,7 @@
 import { app, BrowserWindow, dialog } from 'electron';
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
 import { renameSync, rmSync } from 'node:fs';
-import { mkdir, open, readdir, readFile, rename, rm, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CH } from '../../src/types/api';
 import type {
@@ -39,6 +39,7 @@ import type {
   ProjectStateReport,
   RecoveryOffer,
   SaveResult,
+  SubtitleImportResult,
 } from '../../src/types/api';
 import type { ProjectFile } from '../../src/types/model';
 
@@ -282,6 +283,119 @@ async function openProject(event: IpcMainInvokeEvent, wanted: unknown): Promise<
 
   // The renderer runs migrateProject over this and is the one that validates it.
   return { ok: true, path: target, project: parsed as unknown as ProjectFile };
+}
+
+/* ------------------------------------------------- CREATIVE §6.4 sidecar ---
+   `Export subtitles (.srt)`. Its own channel rather than a mode of
+   `projectSave`, because it produces a different file, for a different program,
+   and it must work with an empty timeline and no project path.
+
+   The renderer has already produced the SubRip with `formatSrt`; main writes
+   BYTES and does not know what SubRip is. That is the same division
+   `saveProject` uses, and it is what keeps one implementation of the format.
+
+   NOT written through `writeFileAtomic`: that function exists because a project
+   is irreplaceable and a truncated one is worse than none. A sidecar .srt is
+   regenerable from the project in one menu click, and the user chose this path
+   in a picker with its own overwrite confirmation — so a plain write is the
+   honest amount of machinery. */
+
+const SRT_FILTERS = [
+  { name: 'SubRip subtitles', extensions: ['srt'] },
+  { name: 'All files', extensions: ['*'] },
+];
+
+const withSrtExtension = (target: string): string =>
+  path.extname(target).toLowerCase() === '.srt' ? target : `${target}.srt`;
+
+async function exportSubtitles(
+  event: IpcMainInvokeEvent,
+  text: unknown,
+  suggested: unknown,
+): Promise<SaveResult> {
+  // '' is a legal payload: a project with no cues writes an empty file rather
+  // than refusing, because "there are no subtitles" is a true statement about
+  // the edit and the user asked for the file.
+  if (typeof text !== 'string') return saveFailed('io-failed', 'There were no subtitles to write');
+
+  const name =
+    typeof suggested === 'string' && suggested.trim() !== ''
+      ? withSrtExtension(suggested.trim().replace(/[\\/:*?"<>|]/g, '-'))
+      : 'Untitled.srt';
+
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const dialogOptions: Electron.SaveDialogOptions = {
+    title: 'Export subtitles',
+    buttonLabel: 'Export',
+    defaultPath: name,
+    filters: SRT_FILTERS,
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  };
+  const result = win
+    ? await dialog.showSaveDialog(win, dialogOptions)
+    : await dialog.showSaveDialog(dialogOptions);
+
+  if (result.canceled || !result.filePath) {
+    return saveFailed('cancelled', 'Exporting subtitles was cancelled');
+  }
+  const target = withSrtExtension(result.filePath);
+
+  try {
+    // UTF-8 with NO BOM. `formatSrt` already wrote CRLF line endings, which is
+    // what players expect; a BOM is what several of them choke on.
+    await writeFile(target, text, 'utf8');
+  } catch (e) {
+    return saveFailed('io-failed', writeFailureMessage(e, target));
+  }
+  return { ok: true, path: target };
+}
+
+/* ------------------------------------------------- CREATIVE §6.5 import ---
+   The mirror of `exportSubtitles`, and it stops in the same place: main opens a
+   native picker and hands back BYTES. It does not parse.
+
+   `parseSrt` needs the project `fps` to round cue times to whole frames (§6.2)
+   and `fps` lives in the store, so parsing in main would mean shipping the frame
+   rate across the bridge just to get an answer the renderer could compute — and
+   a second place that knows what SubRip is. The text crosses the bridge exactly
+   as the project JSON does.
+
+   The BOM is NOT stripped. Node's 'utf8' decoding leaves it in place, which is
+   what we want: §6.2 documents `parseSrt` as tolerant of one and that tolerance
+   is tested, so a strip here would be a second, untested normaliser standing in
+   front of the tested one, free to drift from it.
+
+   No in-flight guard, unlike `pickDirectory`. That one shares a promise because
+   two directory pickers over one window resolve to one answer nobody chose;
+   here a double invoke means the user picks a file twice and imports twice,
+   which is a thing they did rather than a race. `openProject` — the closest
+   sibling, and also an open picker — is unguarded for the same reason. */
+
+async function importSubtitles(event: IpcMainInvokeEvent): Promise<SubtitleImportResult> {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const dialogOptions: Electron.OpenDialogOptions = {
+    title: 'Import subtitles',
+    buttonLabel: 'Import',
+    properties: ['openFile'],
+    filters: SRT_FILTERS,
+  };
+  const result = win
+    ? await dialog.showOpenDialog(win, dialogOptions)
+    : await dialog.showOpenDialog(dialogOptions);
+
+  const target = result.canceled ? null : (result.filePaths[0] ?? null);
+  // Cancelling is an answer, not a failure, and it carries no message: the
+  // caller has nothing to tell the user about a dialog they closed themselves.
+  if (target === null) return { ok: false, reason: 'cancelled' };
+
+  try {
+    return { ok: true, text: await readFile(target, 'utf8'), path: target };
+  } catch (e) {
+    // The renderer gets a reason, not an errno. Main keeps the detail, exactly
+    // as the export path keeps stderr.
+    console.error(`[subtitles] ${path.basename(target)} could not be read`, e);
+    return { ok: false, reason: 'read-failed' };
+  }
 }
 
 /* --------------------------------------------------------- pick directory */
@@ -683,6 +797,8 @@ export function registerProjectIpc(ipcMain: IpcMain): void {
   ipcMain.removeHandler(CH.projectSave);
   ipcMain.removeHandler(CH.projectOpen);
   ipcMain.removeHandler(CH.projectPickDir);
+  ipcMain.removeHandler(CH.subtitlesExport);
+  ipcMain.removeHandler(CH.subtitlesImport);
   ipcMain.removeHandler(CH.appConfirmDiscard);
   ipcMain.removeHandler(CH.autosaveWrite);
   ipcMain.removeHandler(CH.autosaveRecoverable);
@@ -717,6 +833,28 @@ export function registerProjectIpc(ipcMain: IpcMain): void {
       return await openProject(event, wanted);
     } catch {
       return openFailed('io-failed', 'Opening the project failed unexpectedly');
+    }
+  });
+
+  ipcMain.handle(
+    CH.subtitlesExport,
+    async (event, text: unknown, suggested: unknown): Promise<SaveResult> => {
+      try {
+        return await exportSubtitles(event, text, suggested);
+      } catch {
+        return saveFailed('io-failed', 'Exporting subtitles failed unexpectedly');
+      }
+    },
+  );
+
+  ipcMain.handle(CH.subtitlesImport, async (event): Promise<SubtitleImportResult> => {
+    try {
+      return await importSubtitles(event);
+    } catch {
+      // Nothing throws across the bridge. A dialog that could not be raised is
+      // indistinguishable, from the panel's side, from a file that could not be
+      // read: either way there are no cues and the import did not happen.
+      return { ok: false, reason: 'read-failed' };
     }
   });
 

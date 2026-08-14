@@ -13,8 +13,12 @@
    offline one and the one stuck probing), which have no file behind them.
 
    The fixture satisfies every guarantee in §4.4:
-     · 12 media items, 6 tracks (V3 V2 V1 A1 A2 A3), 41 clips, 4 markers,
+     · 13 media items, 6 tracks (V3 V2 V1 A1 A2 A3), 41 clips, 4 markers,
        fps 30, 1920×1080.
+     · one of the 13 is a TEST CHART, not footage — the only fixture with an edge
+       in it, and the only one the spatial effects of CREATIVE §3 are visible
+       against. It is in the rail and on no track: it is reached deliberately,
+       and it must not be mistaken for material when the rail is being judged.
      · clip widths span 12 → 1500 frames (3 px → 375 px at ZOOM_DEFAULT), with
        ten clips under CLIP_MIN_LABEL_WIDTH so the degrade path is visible on
        first load.
@@ -34,7 +38,7 @@ import type {
   ProjectFile,
   Track,
 } from '../types/model';
-import { DEFAULT_CLIP_PROPERTIES } from '../types/model';
+import { DEFAULT_CLIP_PROPERTIES, DEFAULT_SUBTITLE_STYLE } from '../types/model';
 import type { EditorAPI, ProbeData, ProbeResult, RenameResult } from '../types/api';
 import { checkBaseName, renamedPath, splitMediaPath } from '../lib/filename';
 import { applyProject } from '../lib/project';
@@ -228,6 +232,41 @@ const MEDIA: readonly FixtureMedia[] = [
     file: null,
     probe: 'pending',
   },
+  {
+    // AN INSTRUMENT, NOT FOOTAGE — and the only entry in this list that is. Every
+    // other name here is deliberately naturalistic because the rail is judged as
+    // a rail; this one is deliberately not, so nobody scanning it reaches for a
+    // test chart when they wanted b-roll.
+    //
+    // It exists because the other six video fixtures are each a SOLID COLOUR:
+    // `signalstats` reports YMIN === YMAX on all of them, so this repo contained
+    // no frame with an edge in it, and CREATIVE §3's three spatial effects had
+    // nothing that shows what they do — blur has nothing to spread, sharpen has
+    // nothing to enhance. That gap is not hypothetical: a 29%-narrow blur
+    // survived to a third verification pass because no fixture could reveal it.
+    //
+    // Carries a single-pixel step edge (231 -> 16, no transition pixel) with flat
+    // runs either side, two grid pitches for sharpen, and bright corners for
+    // vignette, in neutral greys so 4:2:0 chroma cannot move a measurement taken
+    // on it. Drawn entirely from lavfi sources by scripts/make-dev-media.mjs, so
+    // there is no asset to check in, nothing to go missing on a clean clone, and
+    // it is byte-identical across regenerations. The geometry lives in that
+    // script's CHART object and is not restated here.
+    //
+    // 1900 Hz is the next unused prime x 100, so its tone is a harmonic of no
+    // other fixture's and a mix stays decomposable by frequency.
+    id: 'm_fx_test_chart_edges',
+    name: 'test_chart_edges.mp4',
+    kind: 'video',
+    seconds: 12,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    codec: 'h264',
+    hasAudio: true,
+    file: 'test_chart_edges.mp4',
+    probe: 'ok',
+  },
 ];
 
 const pathOf = (m: FixtureMedia): string => `${FOOTAGE}\\${m.name}`;
@@ -377,6 +416,11 @@ const MARKERS: readonly Marker[] = [
 ];
 
 export const FIXTURE_PROJECT: ProjectFile = {
+  // Deliberately still 1, not PROJECT_VERSION. The fixture is the only
+  // version-1 body this repo can exercise on demand, so it doubles as the
+  // standing check that `migrateProject`'s back-compat path — absent
+  // `subtitles`, absent per-clip grade, absent `kind` — still opens a
+  // pre-CREATIVE project and fills the defaults.
   version: 1,
   name: 'Harbour interview',
   fps: FPS,
@@ -387,6 +431,11 @@ export const FIXTURE_PROJECT: ProjectFile = {
   trackOrder: TRACKS.map((t) => t.id),
   clips: [...CLIPS],
   markers: [...MARKERS],
+  // A version-1 file carries neither key; the fixture is a ProjectFile literal
+  // rather than parsed JSON, so it states the empty defaults `migrateProject`
+  // would have supplied.
+  subtitles: [],
+  subtitleStyle: { ...DEFAULT_SUBTITLE_STYLE },
   savedAt: '2026-02-14T09:00:00.000Z',
 };
 

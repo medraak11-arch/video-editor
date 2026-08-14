@@ -27,11 +27,12 @@
 import { useEffect } from 'react';
 import type { MutableRefObject, RefObject } from 'react';
 import type { Clip, Track, TrackId } from '../../types/model';
-import { clipHasAudio } from '../../types/model';
+import { clipHasAudio, clipUsesMedia, trackVolume } from '../../types/model';
+import { transitionGain } from '../../lib/color';
 import type { StoreState } from '../../state/types';
 import type { Notice } from '../../state/uiSlice';
 import { readStore, useEditorStore } from '../../state/store';
-import { selectVideoClipIdAtFrame } from '../../state/timelineSlice';
+import { selectPictureClipIdAtFrame } from './pictureClip';
 import { ELEMENT_LAG_TOLERANCE_FRAMES } from './usePlaybackClock';
 import {
   DRIFT_CHECK_INTERVAL_MS,
@@ -56,6 +57,7 @@ import {
   elementTimelineSeconds,
   hardSeek,
   median,
+  mixVolume,
   monitorAudible,
   pushDrift,
   sourceSecondsForTimeline,
@@ -132,7 +134,7 @@ export function useAudioMonitor(
     const referenceSeconds = (s: StoreState): number => {
       const playheadSeconds = s.playhead / s.fps;
       const el = activeVideoRef.current;
-      const clipId = selectVideoClipIdAtFrame(s, s.playhead);
+      const clipId = selectPictureClipIdAtFrame(s, s.playhead);
       const clip = clipId ? s.clips[clipId] : undefined;
       const media = clip ? s.items[clip.mediaId] : undefined;
 
@@ -231,7 +233,7 @@ export function useAudioMonitor(
       const reference = referenceSeconds(s);
       const bandMs = deadBandMs(s.fps);
       const bandSeconds = bandMs / 1000;
-      const clockClipId = selectVideoClipIdAtFrame(s, s.playhead);
+      const clockClipId = selectPictureClipIdAtFrame(s, s.playhead);
 
       /* ---- who wants to sound (§1.1, §2.3, §4.4) */
 
@@ -277,8 +279,12 @@ export function useAudioMonitor(
       // clock clip has just been forced to gain 0 in VideoSurface, so reserving
       // for it would spend a monitored voice on silence and report the cap one
       // clip early. Same fact as VideoSurface's `clipVolume`, read the same way.
+      // `clipUsesMedia` for the reason CREATIVE §9.4 item 2 gives: a title clip
+      // has no media and therefore no sound, and reserving the <video>'s slot for
+      // one would report the cap a clip early over every title in the programme.
       const clockClip = clockClipId !== null ? s.clips[clockClipId] : undefined;
-      const clockAudible = clockClip !== undefined && clipHasAudio(clockClip);
+      const clockAudible =
+        clockClip !== undefined && clipUsesMedia(clockClip) && clipHasAudio(clockClip);
       const budget = Math.max(0, MAX_AUDIBLE_SOURCES - (clockAudible ? 1 : 0));
       const chosen = [...audioVoices, ...videoVoices].slice(0, budget);
       if (chosen.length < total && capNoticedRun !== run) {
@@ -434,9 +440,25 @@ export function useAudioMonitor(
           st.desired = {
             // A non-tracking element is muted but left running, so it cannot blurt out of
             // position when it recovers.
+            /*
+              CREATIVE §1.3 consumer 2 and §4.2. The clip term is the PRODUCT of
+              the clip's own volume and the track fader, and the whole level is
+              then multiplied by the transition ramp — `transitionGain`, the same
+              function VideoSurface multiplies the rendered OPACITY by, evaluated
+              at the same frame. One function is what makes a fade that cannot go
+              out of step between picture and sound; `'audio'` is what makes a
+              cross dissolve leave this edit the hard cut it already was. The
+              rule is `transitionGain`'s and is not restated here.
+            */
             gain: st.nonTracking
               ? 0
-              : effectiveGain(clip.properties.volume, track.muted, s.volume, s.muted, silent),
+              : effectiveGain(
+                  mixVolume(clip.properties.volume, trackVolume(track)),
+                  track.muted,
+                  s.volume,
+                  s.muted,
+                  silent,
+                ) * transitionGain(clip, s.playhead, 'audio'),
             // The clamp is a guard for the ±2 % the trim can add at the top of the range:
             // 16 × 1.02 is out of range and must not throw.
             rate: clamp(base * (1 + st.trim), PLAYBACK_RATE_MIN, PLAYBACK_RATE_MAX),

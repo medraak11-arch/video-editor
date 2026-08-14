@@ -20,13 +20,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import type { MutableRefObject, ReactElement } from 'react';
 import type { TrackId } from '../../types/model';
+import { clipUsesMedia } from '../../types/model';
 import { readStore, useEditorStore } from '../../state/store';
 import { framesToSeconds } from '../../lib/time';
 import {
   selectClipIdInTrackAtFrame,
   selectNextClipIdInTrackAfter,
-  selectVideoClipIdAtFrame,
 } from '../../state/timelineSlice';
+import { selectPictureClipIdAtFrame } from './pictureClip';
 import {
   EMPTY_POOL,
   EMPTY_SLOT,
@@ -66,8 +67,12 @@ export function AudioTrackVoice({ trackId, registryRef }: AudioTrackVoiceProps):
   const nextClipId = useEditorStore(
     useCallback((s) => selectNextClipIdInTrackAfter(s, trackId, s.playhead), [trackId]),
   );
-  // §2.3: the clip on screen has its sound carried by the <video> and by nothing else.
-  const clockClipId = useEditorStore((s) => selectVideoClipIdAtFrame(s, s.playhead));
+  // §2.3: the clip the <video> is PLAYING has its sound carried by that element
+  // and by nothing else. `selectPictureClipIdAtFrame`, not the topmost clip: with
+  // a title over footage the element carries the footage, and excluding the title
+  // instead would leave the footage sounding twice — once from the <video>, once
+  // from this voice.
+  const clockClipId = useEditorStore((s) => selectPictureClipIdAtFrame(s, s.playhead));
 
   const clip = useEditorStore(
     useCallback((s) => (clipId ? (s.clips[clipId] ?? null) : null), [clipId]),
@@ -75,11 +80,18 @@ export function AudioTrackVoice({ trackId, registryRef }: AudioTrackVoiceProps):
   const nextClip = useEditorStore(
     useCallback((s) => (nextClipId ? (s.clips[nextClipId] ?? null) : null), [nextClipId]),
   );
+  // `clipUsesMedia` (CREATIVE §9.4 item 2): a title clip carries `mediaId: ''`,
+  // and a lookup on the empty id yields undefined rather than throwing — so the
+  // guard is not defensive, it is the difference between a title being silent
+  // because it has no sound and a title being silent because it looks offline.
   const media = useEditorStore(
-    useCallback((s) => (clip ? (s.items[clip.mediaId] ?? null) : null), [clip]),
+    useCallback((s) => (clip && clipUsesMedia(clip) ? (s.items[clip.mediaId] ?? null) : null), [clip]),
   );
   const nextMedia = useEditorStore(
-    useCallback((s) => (nextClip ? (s.items[nextClip.mediaId] ?? null) : null), [nextClip]),
+    useCallback(
+      (s) => (nextClip && clipUsesMedia(nextClip) ? (s.items[nextClip.mediaId] ?? null) : null),
+      [nextClip],
+    ),
   );
   const track = useEditorStore(useCallback((s) => s.tracks[trackId] ?? null, [trackId]));
   const hasClips = useEditorStore(

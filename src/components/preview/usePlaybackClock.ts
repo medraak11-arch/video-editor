@@ -30,7 +30,7 @@ import { readStore, useEditorStore } from '../../state/store';
 import type { StoreState } from '../../state/types';
 import { secondsToFrames } from '../../lib/time';
 import { selectPlaybackStopFrame } from '../../state/playbackSlice';
-import { selectVideoClipIdAtFrame } from '../../state/timelineSlice';
+import { selectPictureClipIdAtFrame } from './pictureClip';
 
 /**
  * @param activeVideoRef the pooled <video> currently on screen, or null when the
@@ -82,7 +82,10 @@ export function usePlaybackClock(activeVideoRef: RefObject<HTMLVideoElement | nu
       const el = activeVideoRef.current;
       if (!el || el.paused || el.seeking || el.readyState < 2) return null;
 
-      const clipId = selectVideoClipIdAtFrame(s, s.playhead);
+      // The clip the ELEMENT is playing, which is not the topmost clip when a
+      // title is over the footage — see pictureClip.ts. Mapping the element's
+      // clock through a title would map it through a clip with no source.
+      const clipId = selectPictureClipIdAtFrame(s, s.playhead);
       const clip = clipId ? s.clips[clipId] : undefined;
       if (!clip) return null;
 

@@ -16,6 +16,33 @@ sign in to. The chrome stays dark and quiet so the frame is the only lit thing o
   undo.
 - Preview with real transport: play/pause, J-K-L shuttle, frame stepping, in and out points.
 - Per-clip transform (scale, position, rotation, opacity), speed and volume in the inspector.
+- **Per-track volume.** A fader in every track head, reading in dB — `−6.0 dB`, `unity`, `silent` —
+  because that is what the number means. Effective gain is the clip's own volume times the track's,
+  and a muted track is silence; the preview and the export apply the same product. On a track too
+  short to show the fader, the same seven dB presets live in its context menu with the current gain
+  on the label.
+- **Colour grade** per clip: brightness, contrast, saturation and temperature, applied in that
+  order. The preview and the export compute it from one shared function and work in the same RGB
+  domain, so what you graded is what the file gets — measured to within 1/255.
+- **Effects** per clip: blur (0–50, in finished-frame pixels, so it does not change when you resize
+  the clip), sharpen, vignette, and horizontal and vertical flips.
+- **Transitions** on a clip's edges: fade in and fade out from black and silence, and a cross
+  dissolve with the clip immediately before it. Drag the ramp handle in a clip's top corner, or use
+  the clip's context menu; the inspector gives numeric frame fields. Default 12 frames.
+- **Titles.** `T` drops a title card at the playhead on the selected video track: text, size,
+  typeface, weight, colour, an optional plate behind it, alignment and anchor. It is an ordinary
+  clip — it trims, moves, grades and takes transitions like any other. The preview and the export
+  draw it with the same rasteriser, so the exported card is the one you were looking at.
+- **Subtitles.** Import and export `.srt`, edit cues inline in the inspector, and burn them into
+  the exported file if you want them baked in. The authoring loop is two keys: `C` creates a cue at
+  the playhead and puts the caret in it, you type, and `Ctrl+Enter` from inside that field closes
+  the cue at the playhead. Playback never stops for any of it.
+- **Insert-and-push dragging.** Drop a clip so its start lands on a seam between two clips and it
+  is placed there, pushing what is in the way to the right — as far as it must and no further, so
+  the push stops at the first gap wide enough to absorb it. The clips move under the pointer while
+  you drag, so you see the rearrangement before you commit it. `V` does the same thing at the
+  playhead for the selection. The hole the clip came from stays open: an insert changes the target
+  side only.
 - Rename a source file on disk, from the media rail's context menu or the inspector's `Name`
   field. The extension is preserved, and every clip cut from the file keeps playing from it — clips
   reference media by id, so nothing goes offline. A clip's own label on the timeline is a separate,
@@ -131,6 +158,9 @@ buttons keep their own keys.
 | `Shift+D` | Detach audio |
 | `Ctrl+L` | Link selected clips |
 | `Ctrl+Shift+L` | Unlink selected clips |
+| `T` | Add title at playhead |
+| `C` | Add subtitle cue at playhead |
+| `V` | Insert selection at playhead |
 | `+` or `=` | Zoom in |
 | `-` | Zoom out |
 | `Shift+Z` | Zoom to fit |
@@ -271,10 +301,35 @@ These are design decisions and honest gaps, not bugs.
 - **Windows x64 only.** Nothing in the code is Windows-specific and it runs under `npm run dev` on
   other platforms, but no macOS or Linux target is configured and neither has been packaged or
   tested.
-- **The preview composites the topmost visible video clip, and so does the export.** Transform,
-  opacity and speed apply to that clip against the background. Stacked video tracks decide *which*
-  clip is on top; they do not blend. Audio tracks do mix.
-- **No transitions, titles, effects or colour correction.** A cut is a cut.
+- **The export composites the whole video stack; the preview shows one media clip of it.** The
+  exported file overlays every clip on every visible video track in track order, honouring opacity.
+  The preview plays the topmost visible video clip and draws titles, the outgoing side of a cross
+  dissolve, and subtitles over it — but it does not blend two pieces of *footage*. Where two media
+  clips overlap on different tracks, the preview shows the upper one and the file shows both
+  composited. Audio mixes in both.
+- **Subtitles in the preview are a close match, not the exported pixels.** The overlay is drawn by
+  the browser and the burn-in by libass — two text engines — so line breaks and letter spacing can
+  differ slightly at the same size. Position, timing and style follow the same numbers. Titles do
+  not have this gap: both sides use one rasteriser.
+- **A cross dissolve affects picture only.** The sound at a dissolve is a hard cut, on both sides.
+  This is deliberate and it is what every NLE does — a video transition and an audio transition are
+  separate objects. Use `Fade` on the clip edge to ramp the sound. There is currently no way to
+  author an audio crossfade at a cut.
+- **A cross dissolve *out of* a title degrades to a plain fade,** and the export says so in its
+  notices. The preview cannot draw a title underneath the incoming card, and this project does not
+  ship an export behaviour the preview cannot show. Dissolving *into* a title, and every
+  footage-to-footage dissolve, is unaffected.
+- **Saturation stops at 1.8×, not 3×.** Beyond about 1.85 the encoder refuses the whole filter
+  graph rather than clipping, so a higher number would not be a stronger grade — it would be a
+  failed export. Premiere and Resolve both top out at 2×. A project saved before this clamps down
+  on load.
+- **Sharpen and vignette are approximations in the preview.** They are close in direction and
+  rough magnitude, not exact; the inspector says so on the controls. Brightness, contrast,
+  saturation, temperature and blur are exact to within 1/255.
+- **Insertion needs snapping on to aim it.** A drop inserts when the dragged clip's start lands on
+  a seam and would otherwise overlap. With the magnet off there is nothing to land on, so an
+  overlapping drop refuses as it always did. `V` at the playhead is unaffected — it aims at the
+  playhead, not at a snap.
 - **Autosave is a crash net, not version history.** A snapshot of the open project is written to
   `%APPDATA%\Medrak Cut Video Editor\autosave\` about two seconds after you stop editing, and never less often
   than every twenty seconds while there are unsaved changes — so a crash or a power cut costs at
@@ -314,8 +369,15 @@ src/
   state/           one zustand store, four slices
   keyboard/        the shortcut registry every tooltip and the overlay read
   styles/          tokens.css — the only file allowed to contain a colour
-scripts/           contract checker, icon, ffmpeg staging, keymap generation, media fixtures
+  lib/             pure shared code both the renderer and the export use —
+                   color.ts (the grade maths), titleRaster.ts (the one title rasteriser),
+                   srt.ts (SubRip in and out)
+scripts/           contract checker, icon, ffmpeg staging, keymap generation, media fixtures,
+                   and the gate suite `npm run check` runs — including
+                   check-gate-failure-paths.mjs, which forces the other gates' failure branches
 docs/              PLAN.md (implementation), EXPORT.md (the ffmpeg contract),
+                   CREATIVE.md (track volume, grade, effects, transitions, titles,
+                   subtitles, insert-and-push),
                    AUDIO-MONITOR.md (how preview audio works),
                    AUDIO-FEATURES.md (detach audio, audio-only export),
                    LINKING.md (group and ungroup),

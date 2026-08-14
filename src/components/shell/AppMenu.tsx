@@ -15,11 +15,12 @@
 
 import { useMemo } from 'react';
 import type { ReactElement } from 'react';
-import { FolderOpen, MoreHorizontal, PanelLeft, Save, Sliders, Upload } from 'lucide-react';
+import { Captions, FolderOpen, MoreHorizontal, PanelLeft, Save, Sliders, Upload } from 'lucide-react';
 import { IconButton, Menu } from '../ui';
 import type { MenuItem } from '../ui';
-import type { AppBuild } from '../../types/api';
+import type { AppBuild, SaveResult } from '../../types/api';
 import { getEditorAPI } from '../../lib/editorApi';
+import { formatSrt } from '../../lib/srt';
 import { readStore, useEditorStore } from '../../state/store';
 import { THEME_LABELS, THEME_NAMES } from '../../state/uiSlice';
 import { ShortcutHint } from '../../keyboard/ShortcutHint';
@@ -62,12 +63,45 @@ function diagnosticBlock(build: AppBuild, platform: string): string {
   ].join('\n');
 }
 
+/**
+ * CREATIVE §6.4. The renderer formats; main writes bytes. `formatSrt` is the one
+ * implementation of SubRip in this codebase, and it is the same one the burn-in
+ * path uses, so a sidecar and a burn-in of the same project cannot disagree.
+ *
+ * `offsetFrames` is deliberately not passed: a sidecar carries the TIMELINE's
+ * own times, and the parameter exists for the export range that burn-in needs.
+ *
+ * Works with an empty timeline and with no project path — the whole reason this
+ * is its own channel rather than a mode of Save.
+ */
+async function exportSubtitlesFile(
+  write: (text: string, suggestedName: string) => Promise<SaveResult>,
+): Promise<void> {
+  const s = readStore();
+  const cues = Object.values(s.subtitles ?? {}).sort(
+    (a, b) => a.start - b.start || a.end - b.end,
+  );
+  const name = (s.projectName || 'Untitled').replace(/[\\/:*?"<>|]/g, '-');
+  const result = await write(formatSrt(cues, s.fps), `${name}.srt`);
+
+  // Success is the file appearing where the user put it; there is nothing to
+  // announce. Cancelling is an answer, not a failure. Only a write that was
+  // asked for and did not happen is worth a notice, and main's sentence is
+  // already one the user can act on.
+  if (result.ok || result.error.code === 'cancelled') return;
+  s.setNotice({ tone: 'danger', title: 'Export failed', message: result.error.message });
+}
+
 export function AppMenu(): ReactElement {
   // Both are constant for the life of the process, so neither is store state:
   // `build` arrives in this renderer's argv at window creation (RELEASE.md
   // §2.2) and `update` is present only in a build whose feed was configured at
   // package time (§1.3).
   const { build, platform, update } = getEditorAPI();
+  // Feature-detected exactly as `media.reveal` and every other post-fixture
+  // bridge is: absent under `dev:web`, where there is no preload and no shell to
+  // raise a save picker, so the item is not rendered rather than rendered dead.
+  const writeSubtitles = getEditorAPI().project.exportSubtitles;
   const theme = useEditorStore((s) => s.theme);
   const railCollapsed = useEditorStore((s) => s.railCollapsed);
   const inspectorPinned = useEditorStore((s) => s.inspectorPinned);
@@ -110,6 +144,22 @@ export function AppMenu(): ReactElement {
         shortcut: <ShortcutHint id="file.export" />,
         onSelect: () => setExportDialogOpen(true),
       },
+      // Independent of any encode, and available with an empty timeline —
+      // CREATIVE §6.4. It sits beside Export because it is the other thing this
+      // project can be turned into, not under it: it starts no job and shows no
+      // progress.
+      ...(writeSubtitles
+        ? [
+            {
+              kind: 'item' as const,
+              id: 'export-subtitles',
+              label: 'Export subtitles (.srt)',
+              icon: <Captions size={14} strokeWidth={1.75} />,
+              onSelect: () =>
+                run(exportSubtitlesFile(writeSubtitles), 'Could not export subtitles'),
+            },
+          ]
+        : []),
       { kind: 'separator', id: 'sep-view' },
       {
         kind: 'item',
@@ -188,6 +238,7 @@ export function AppMenu(): ReactElement {
       build,
       platform,
       update,
+      writeSubtitles,
       theme,
       railCollapsed,
       inspectorPinned,

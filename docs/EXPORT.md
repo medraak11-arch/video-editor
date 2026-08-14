@@ -398,6 +398,17 @@ true, on a track that is not muted, with `volume > 0`. *This includes clips on v
 matches the preview (`VideoSurface` unmutes the active clip's `<video>`), and it includes clips that
 draw nothing (`opacity 0`, or a hidden video track).
 
+**AMENDED — two more terms have joined that predicate since.** `wantsAudio` now also requires
+`trackVolume(track) > 0`, so a track faded to silence contributes **no input at all**, exactly as
+`muted` already did — an input decoded, resampled and mixed at zero is work done to produce
+silence (CREATIVE §1.3). And a **title clip** is excluded: it carries `mediaId: ''`, has no media
+and therefore no stream to be audible (CREATIVE §5.1).
+
+Note the deliberate asymmetry with the preview, which is not a divergence to fix: the preview
+*keeps* a voice on a track at gain 0 and gates it to silence, because dropping and reloading a
+source every time a live fader drag crosses zero is an audible dropout produced by the act of
+listening. `check-mix.mjs` requires both behaviours.
+
 ```
 [<i>:a]asetpts=PTS-STARTPTS,
        <atempo chain>,
@@ -430,7 +441,11 @@ draw nothing (`opacity 0`, or a hidden video track).
   `speed 8` is three lossy resamples where one is legal, and it degrades the audio for nothing.
   The `out.length === 0` guard is load-bearing and must stay: without it a `speed 1` clip emits an
   empty slot and the chain gets a double comma.
-- `volume=<volume>` is `ClipProperties.volume` (`0..2`).
+- **AMENDED by CREATIVE §1.3 — `volume=` is a PRODUCT, not `ClipProperties.volume`.** It is
+  `props.volume * trackVolume(track)`: the clip's own volume times its track's fader, which is what
+  a mixer does. `trackVolume` is `1` when the track has no `volume` key, so a project written
+  before that feature emits exactly what this line used to say. The same product is applied in the
+  preview by `mixVolume` in `audioMonitor.ts`, and `check-mix.mjs` asserts the two agree.
 - `aresample=48000:async=1:first_pts=0` conforms every source to one rate. `async=1` corrects drift
   on sources whose timestamps are not exactly regular; `first_pts=0` prevents a leading gap.
 - `aformat=…:channel_layouts=stereo` — `amix` requires a common layout; a mono VO and a stereo bed
@@ -1546,13 +1561,33 @@ graphs.
 
 Stated plainly so nobody gold-plates. Each of these is a deliberate omission, not an oversight.
 
-- **No transitions.** No cross-dissolve, no fade to black, no wipe. There is no transition in the
-  data model to export; adding one to the graph would mean inventing one.
-- **No colour grading.** No LUTs, no curves, no `eq`, no white balance, no `colorspace` conversion
-  beyond the `format` filters the pipeline needs to function.
-- **No per-clip filters beyond `speed`, `opacity` and `volume`.** `scale`, `positionX` and
-  `positionY` *are* honoured, because they are parameters of the `scale` and `overlay` filters the
-  graph already emits — they add no filter and no code path.
+> **SUPERSEDED IN PART BY docs/CREATIVE.md.** The first three entries below were true of v1 and are
+> not true now: transitions, colour grading, effects, titles and subtitle burn-in all ship, and the
+> graph emits filters for every one of them. They are kept, struck through, because the *reasoning*
+> in them is still how this file decides what to add — and because a scope list that quietly grows
+> a feature is worse than one that says which of its own entries expired. The rest of the section
+> stands unchanged.
+
+- ~~**No transitions.**~~ **Shipped — CREATIVE §4.** `fade=t=in|out:alpha=1` and `afade` on a
+  clip's edges, and a cross dissolve built from two edits the graph already makes: the outgoing
+  clip's input `-t` is extended by the clamped handle so it is still on screen underneath, and the
+  incoming clip alpha-ramps over it. No `xfade`, no second pass. The alpha ramp is load-bearing —
+  a luminance fade would punch a black hole through whatever is beneath instead of revealing it.
+  A dissolve applies **no audio ramp on either side** (§4.3a) and one *out of a title* degrades to
+  a fade with a notice (§4.3d).
+- ~~**No colour grading.**~~ **Shipped — CREATIVE §2, and it is a LUT after all.** The chain is
+  `format=<gbrap10le|gbrap12le>`, `lutrgb` for contrast and brightness, then one
+  `colorchannelmixer` carrying saturation, temperature *and* opacity as a single 3×3, then back to
+  the clip pixel format. **`eq` is not used and must not be reintroduced** — it works on
+  limited-range YUV, which disagreed with the preview's RGB by 7–9/255 and is the whole reason
+  §2.4 exists. Two colour domains in one chain is how that happened. `colorspace` conversion is
+  still out of scope.
+- ~~**No per-clip filters beyond `speed`, `opacity` and `volume`.**~~ **Nine more — CREATIVE §2,
+  §3.** brightness, contrast, saturation and temperature above; plus `gblur`, `unsharp`,
+  `vignette`, `hflip` and `vflip`. `scale`, `positionX` and `positionY` are honoured as they always
+  were, because they are parameters of the `scale` and `overlay` filters the graph already emits.
+  An ungraded clip with no effects emits **none** of these, which is what keeps §1.8's transcripts
+  byte-exact.
 - **`rotation` is not honoured.** It is the one `ClipProperties` field the export drops, and unlike
   the others it would require a new `rotate` filter, alpha-aware padding to avoid clipping the
   corners, and a rotation-origin convention that provably matches CSS `transform-origin: 50% 50%`.

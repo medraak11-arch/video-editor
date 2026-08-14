@@ -34,6 +34,7 @@ import type {
   RecoveryOffer,
   RenameResult,
   SaveResult,
+  SubtitleImportResult,
   UpdatePhase,
 } from '../src/types/api';
 import type { ProjectFile } from '../src/types/model';
@@ -107,6 +108,14 @@ const api: EditorAPI = {
       ipcRenderer.invoke(CH.projectSave, project, opts ?? {}) as Promise<SaveResult>,
     open: (path) => ipcRenderer.invoke(CH.projectOpen, path ?? null) as Promise<OpenResult>,
     pickDirectory: () => ipcRenderer.invoke(CH.projectPickDir) as Promise<string | null>,
+    /** CREATIVE §6.4. The renderer has already produced the SubRip; this passes
+     *  bytes, exactly as `save` passes a serialised project. */
+    exportSubtitles: (text: string, suggestedName: string) =>
+      ipcRenderer.invoke(CH.subtitlesExport, text, suggestedName) as Promise<SaveResult>,
+    /** CREATIVE §6.5. Returns the file's text; `parseSrt` runs in the renderer,
+     *  which is the only side that has the project fps. */
+    importSubtitles: () =>
+      ipcRenderer.invoke(CH.subtitlesImport) as Promise<SubtitleImportResult>,
     onOpenRequest: (cb) => {
       const stop = subscribe<string>(CH.projectOpenPath, cb);
       // Tells main a listener exists. A .veproj the OS handed over at launch is

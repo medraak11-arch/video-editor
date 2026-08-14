@@ -23,7 +23,18 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const dir = mkdtempSync(join(tmpdir(), 've-linking-'));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+/* CREATIVE §7.4 entry 8 — the bundle survives a FAILURE. Deleted on a pass; on a
+   failure it is kept and its path printed, so what was actually compiled can be
+   read rather than guessed at. An unreproducible `check-linking` failure was
+   once diagnosed as a torn mid-save read and relayed onward as such; there was
+   no torn file — another agent had bound `V` to two rows and the gate caught the
+   mutation in flight. Naming a mechanism is not evidence. This is what makes it
+   checkable in one look. */
+let keepBundle = false;
+process.on('exit', () => {
+  if (keepBundle) return;
+  rmSync(dir, { recursive: true, force: true });
+});
 
 async function bundle(relative, name) {
   const outfile = join(dir, `${name}.mjs`);
@@ -508,9 +519,26 @@ for (const action of ['deleteSelection', 'rippleDelete']) {
 {
   const track = { id: 't_a', kind: 'video', index: 1, label: 'V1', height: 64, muted: false, locked: false, visible: true };
   const gone = { id: 't_gone', kind: 'video', index: 2, label: 'V2', height: 64, muted: false, locked: false, visible: true };
-  const properties = { scale: 1, positionX: 0, positionY: 0, rotation: 0, opacity: 1, speed: 1, volume: 1 };
+  /* A COMPLETE, already-legal ClipProperties — all sixteen fields, every one in
+     range. That completeness is the point of the fixture: `normalizeClipProperties`
+     is total, so a partial set here would be legitimately filled in and the
+     assertion below would be measuring the fill rather than the promise. */
+  /* NOT the neutral defaults, and that is deliberate. A fixture built from the
+     default value of every field cannot tell "preserved" from "reset": a
+     migration bug that overwrites `opacity` with 1 is invisible against a
+     fixture whose opacity was already 1, and a mutation test proved exactly
+     that — zeroing `mediaIn` passed the gate because the fixture's `mediaIn`
+     was already 0. Every value below is therefore off its default and
+     distinguishable from every other, so any field that gets crossed, reset or
+     rounded shows up as an inequality. */
+  const properties = {
+    scale: 1.25, positionX: -40, positionY: 17, rotation: -12, opacity: 0.8, speed: 1.5, volume: 0.6,
+    brightness: 0.2, contrast: 1.4, saturation: 0.7, temperature: -35,
+    blur: 3, sharpen: 0.5, vignette: 0.25, flipH: true, flipV: false,
+  };
   const clip = (id, trackId, linkId) => ({
-    id, mediaId: MEDIA, trackId, start: 0, duration: 10, mediaIn: 0, name: id, properties,
+    id, mediaId: MEDIA, trackId, start: 24, duration: 10, mediaIn: 96, name: `name of ${id}`,
+    properties: { ...properties },
     ...(linkId !== undefined ? { linkId } : {}),
   });
 
@@ -534,14 +562,61 @@ for (const action of ['deleteSelection', 'rippleDelete']) {
     JSON.stringify([byId.c_1?.linkId, byId.c_2?.linkId]));
   check('9. a linkId held by one survivor is dropped', byId.c_3 !== undefined && !('linkId' in byId.c_3),
     JSON.stringify(byId.c_3));
-  check('9. an untouched clip keeps its object identity', byId.c_1 === kept1 && byId.c_5 === plain);
+  // WAS "keeps its object identity", and that is no longer achievable by
+  // construction: `migrateProject` now rebuilds every clip unconditionally so
+  // that `normalizeClipProperties` can be TOTAL — a `.veproj` with a partial
+  // `properties` object must come out of migration complete, or `undefined`
+  // reaches the graph as NaN (CREATIVE §2, and see the flat-black bug the grade
+  // gate now covers).
+  //
+  // Identity was only ever a PROXY for "this clip was not altered". A total
+  // normaliser breaks the proxy while leaving the property it stood for
+  // perfectly true, so the gate now asserts the property directly. That is
+  // strictly stronger: identity would pass on a rebuilt-but-corrupted clip only
+  // by accident, and deep equality catches a migration that silently rounds a
+  // start frame or drops a name.
+  //
+  // The cost the rebuild does carry — a new object for every clip on open, so
+  // no referential-equality short-circuit for React — is accepted and bounded
+  // in CREATIVE §9.4a: opening a project replaces the whole store anyway. The
+  // day `migrateProject` is used for anything INCREMENTAL, identity becomes
+  // load-bearing again and the fix belongs in scaffold, not here.
+  const unchanged = (before, after) =>
+    after !== undefined &&
+    before.id === after.id &&
+    before.mediaId === after.mediaId &&
+    before.trackId === after.trackId &&
+    before.start === after.start &&
+    before.duration === after.duration &&
+    before.mediaIn === after.mediaIn &&
+    before.name === after.name &&
+    // Every property the file DID carry survives untouched. Keys it did not
+    // carry are filled from the defaults, which is the point of the rebuild —
+    // so this compares what was written, not what came back.
+    Object.entries(before.properties ?? {}).every(([k, v]) => after.properties?.[k] === v);
+
+  check(
+    '9. migration does not alter a clip it had no reason to alter',
+    unchanged(kept1, byId.c_1) && unchanged(plain, byId.c_5),
+    JSON.stringify({ c_1: byId.c_1, c_5: byId.c_5 }),
+  );
+  // And the rebuild really is total: a clip whose file carried a PARTIAL
+  // properties object comes back complete. This is the half identity never
+  // tested and the half that stops NaN reaching a filter argument.
+  check(
+    '9. migration fills every property a partial clip was missing',
+    typeof byId.c_5?.properties?.contrast === 'number' &&
+      typeof byId.c_5?.properties?.blur === 'number' &&
+      typeof byId.c_5?.properties?.flipH === 'boolean',
+    JSON.stringify(byId.c_5?.properties),
+  );
 }
 
 /* ---------------------------------------------------- 10: one row per combo */
 
 {
   const clashes = [];
-  for (const [combo, rows] of shortcuts.SHORTCUTS_BY_COMBO) {
+  for (const [combo, rows] of shortcuts.SHORTCUT_COMBOS) {
     if (rows.length !== 1) clashes.push(`${combo} -> ${rows.map((r) => r.id).join(', ')}`);
   }
   check('10. every combo maps to exactly one row', clashes.length === 0, clashes.join(' | '));
@@ -580,9 +655,15 @@ for (const action of ['deleteSelection', 'rippleDelete']) {
 /* ------------------------------------------------------------------- report */
 
 if (failures.length > 0) {
+  keepBundle = true;
   console.error(`linking: ${failures.length} failure(s)\n`);
   for (const f of failures) console.error(`  FAIL  ${f}`);
   console.error('\ndocs/LINKING.md §12 — a LinkId must never be carried by fewer than two clips.');
+  console.error(
+    `\n  the bundled source this ran against is preserved at:\n    ${dir}\n` +
+      '  Deleted on a pass, kept on a failure, so what was actually compiled can be read ' +
+      'rather than guessed at — CREATIVE §7.4 entry 8.\n',
+  );
   process.exit(1);
 }
 

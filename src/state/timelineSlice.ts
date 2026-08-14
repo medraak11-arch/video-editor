@@ -24,6 +24,7 @@ import type {
   ClipId,
   ClipProperties,
   ClipStreams,
+  CueId,
   Frames,
   LinkId,
   Marker,
@@ -33,19 +34,34 @@ import type {
   ProjectFile,
   PxPerFrame,
   Selection,
+  SubtitleCue,
+  SubtitleStyle,
+  TitleSpec,
   Track,
   TrackId,
+  Transition,
 } from '../types/model';
 import {
   DEFAULT_CLIP_PROPERTIES,
+  DEFAULT_SUBTITLE_STYLE,
+  DEFAULT_TITLE,
   EMPTY_SELECTION,
   clipEnd,
   clipHasVideo,
+  clipIsTitle,
   clipSourceLength,
   clipStreams,
+  clipUsesMedia,
+  trackVolume,
 } from '../types/model';
 import type { SliceCreator, StoreState } from './types';
 import type { Notice } from './uiSlice';
+// THE two sanitisers, shared with the load path rather than restated here.
+// Imported from ./clipProperties and NOT from ../lib/project, which re-exports
+// them: project.ts imports `readStore`, store.ts calls `createTimelineSlice` at
+// module-eval time, and that cycle builds the store with an undefined slice
+// creator. clipProperties imports from src/types only, so it cannot close one.
+import { normalizeClipProperties, subtitleStyleOf } from '../lib/clipProperties';
 import { newId } from '../lib/id';
 import { framesToPx, pxToFramesExact } from '../lib/time';
 import {
@@ -82,6 +98,17 @@ export interface TimelineDoc {
    */
   clipsByTrack: Record<TrackId, ClipId[]>;
   markers: Record<MarkerId, Marker>;
+  /**
+   * CREATIVE §6.1. Inside the DOC, not beside it, because a cue is a project
+   * change in exactly the sense a clip is: it dirties the project, it is written
+   * by `serializeProject`, and an undo that restored the clips but not the cue
+   * the same keystroke had just retimed would leave the two out of step with no
+   * way back. Keyed rather than an array for the same reason `clips` is — every
+   * cue action addresses one cue by id.
+   */
+  subtitles: Record<CueId, SubtitleCue>;
+  /** In the doc for the reason the cues are: it is saved, and it is undoable. */
+  subtitleStyle: SubtitleStyle;
 }
 
 export interface TimelineState extends TimelineDoc, TimelineViewState {
@@ -117,6 +144,23 @@ export type PlanResult =
   | { ok: true; clips: Clip[] }
   | { ok: false; reason: MoveFailure; blockingClipId: ClipId | null };
 
+/**
+ * The dry-run result of an INSERT (CREATIVE §12.7).
+ *
+ * `clips` is the moving set at its new position, exactly as `PlanResult.clips`
+ * is. `pushed` is what the cascade displaced — a DISJOINT set, reported
+ * separately because the two are consumed differently: the ghost renders
+ * `clips` where the pointer is and transforms `pushed` in place, so the user
+ * sees the displacement before committing to it. `pushed` is empty whenever a
+ * gap absorbed the insert, which is the common case and is not a failure.
+ *
+ * Readonly because both callers only ever read it, and the empty case is a
+ * shared constant rather than a fresh array per pointermove.
+ */
+export type InsertPlan =
+  | { ok: true; clips: Clip[]; pushed: readonly Clip[] }
+  | { ok: false; reason: MoveFailure; blockingClipId: ClipId | null };
+
 export interface AddClipInput {
   mediaId: MediaId;
   trackId: TrackId;
@@ -131,6 +175,15 @@ export interface AddClipInput {
   name?: string;
   /** Defaults to `{ ...DEFAULT_CLIP_PROPERTIES }`, as today. Only `detachAudio` passes it. */
   properties?: ClipProperties;
+  /**
+   * Only `addTitleClip` passes these, and it passes both. A title enters through
+   * this funnel rather than through a second creation path so that it gets the
+   * same lock, kind, overlap and finite-frames rules every other clip gets —
+   * CREATIVE §5.1 makes a title a clip, so nothing here may make it a special
+   * case except where it carries no media.
+   */
+  kind?: 'title';
+  title?: TitleSpec;
 }
 
 export interface TimelineActions {
@@ -151,6 +204,22 @@ export interface TimelineActions {
    * semantics.
    */
   moveClips(
+    ids: ClipId[],
+    deltaFrames: Frames,
+    deltaTrackIndex: number,
+    primaryTrackId: TrackId | undefined,
+  ): MutationResult;
+  /**
+   * INSERT — CREATIVE §12. Same arguments as `moveClips`, and a third outcome
+   * rather than a change to either existing one: where `moveClips` refuses an
+   * occupied landing with `overlap`, this places the clips and cascades the
+   * occupants to the right, stopping at the first gap wide enough to absorb the
+   * push.
+   *
+   * ONE history entry for the dragged clips and everything they displaced,
+   * across every lane touched. The source gap is NOT closed — see `planInsert`.
+   */
+  insertClips(
     ids: ClipId[],
     deltaFrames: Frames,
     deltaTrackIndex: number,
@@ -210,6 +279,12 @@ export interface TimelineActions {
   toggleMute(id: TrackId): void;
   toggleLock(id: TrackId): void;
   toggleVisible(id: TrackId): void;
+  /**
+   * CREATIVE §1.1. Clamped to 0..2. Unity DELETES the key rather than storing a
+   * redundant `1`, exactly as `streams` and `linkId` are absent at their
+   * defaults, so an ordinary track carries nothing new into a save.
+   */
+  setTrackVolume(id: TrackId, volume: number): void;
   setZoom(zoom: PxPerFrame): void;
   /**
    * anchorPx = pointer x relative to the lane viewport's left edge. Keeps the frame under
@@ -236,6 +311,37 @@ export interface TimelineActions {
   updateClipProperties(ids: ClipId[], patch: Partial<ClipProperties>): MutationResult;
   renameClip(id: ClipId, name: string): void;
 
+  /**
+   * CREATIVE §4. `null` removes the transition on that edge.
+   *
+   * An 'out' edge accepts `kind: 'fade'` ONLY and REFUSES a dissolve rather than
+   * quietly rewriting it to a fade: a dissolve is owned by the incoming clip
+   * (§4.3), so an outgoing one is a call that has misunderstood which clip it is
+   * addressing, and silently honouring half of it would put the transition on
+   * the wrong side of the cut. `frames` is clamped to 1..⌊duration/3⌋.
+   */
+  setClipTransition(clipId: ClipId, edge: 'in' | 'out', t: Transition | null): void;
+  /**
+   * CREATIVE §5. A title clip: no media, `kind: 'title'`, five seconds at the
+   * project fps. null when the track does not exist, is locked, or is an audio
+   * track — a title belongs on a video track, above the footage (§5.1).
+   */
+  addTitleClip(trackId: TrackId, startFrame: Frames): ClipId | null;
+  /** Patches the TitleSpec of a title clip. A no-op on a media clip. */
+  setClipTitle(clipId: ClipId, patch: Partial<TitleSpec>): void;
+
+  /* ------------------------------------------------ subtitles (CREATIVE §6) */
+
+  /** Adds a cue at `startFrame`, two seconds long, with empty text. */
+  addCue(startFrame: Frames): CueId;
+  setCue(id: CueId, patch: Partial<Pick<SubtitleCue, 'start' | 'end' | 'text'>>): void;
+  removeCue(id: CueId): void;
+  /** Import, replace mode: the incoming cues become the whole set. */
+  replaceCues(cues: SubtitleCue[]): void;
+  /** Import, append mode: the incoming cues join the existing set. */
+  appendCues(cues: SubtitleCue[]): void;
+  setSubtitleStyle(patch: Partial<SubtitleStyle>): void;
+
   // --- history ---
   /** Open a transaction. A no-op when one is already open (transactions do not nest). */
   beginHistory(label: string): void;
@@ -246,7 +352,12 @@ export interface TimelineActions {
   undo(): void;
   redo(): void;
 
-  hydrateTimeline(p: Pick<ProjectFile, 'tracks' | 'trackOrder' | 'clips' | 'markers'>): void;
+  hydrateTimeline(
+    p: Pick<
+      ProjectFile,
+      'tracks' | 'trackOrder' | 'clips' | 'markers' | 'subtitles' | 'subtitleStyle'
+    >,
+  ): void;
 }
 
 export type TimelineSlice = TimelineState & TimelineActions;
@@ -295,6 +406,8 @@ const docOf = (s: TimelineDoc): TimelineDoc => ({
   clips: s.clips,
   clipsByTrack: s.clipsByTrack,
   markers: s.markers,
+  subtitles: s.subtitles,
+  subtitleStyle: s.subtitleStyle,
 });
 
 /** Shallow per-collection copy. Records are never mutated in place, so this is a true snapshot. */
@@ -307,6 +420,10 @@ function cloneDoc(d: TimelineDoc): TimelineDoc {
     clips: { ...d.clips },
     clipsByTrack,
     markers: { ...d.markers },
+    subtitles: { ...d.subtitles },
+    // Not copied: a SubtitleStyle is replaced wholesale by `setSubtitleStyle`
+    // and never mutated in place, so the reference IS the snapshot.
+    subtitleStyle: d.subtitleStyle,
   };
 }
 
@@ -435,17 +552,32 @@ function pruneSelection(selection: Selection, clips: Record<ClipId, Clip>): Sele
 }
 
 /**
- * A frame or duration argument that is safe to sanitize. PLAN §2.1: time is whole
- * frames, always — and NaN is not one.
+ * An OPTIONAL frame or duration argument that is safe to sanitize. PLAN §2.1:
+ * time is whole frames, always — and NaN is not one.
  *
- * Every clamp in this file is blind to it: `Math.max(0, NaN)` is NaN, `Math.round(NaN)`
+ * Every clamp in this file is blind to NaN: `Math.max(0, NaN)` is NaN, `Math.round(NaN)`
  * is NaN, and every comparison against NaN is false, so the overlap and source-bound
  * checks below "succeed" and the clip lands in the store with geometry that poisons all
  * duration arithmetic downstream. Sanitizing cannot fix a non-number, so the boundary
  * refuses it — `out-of-range`, the same all-or-nothing refusal as start < 0 (§3.4 rule 1).
  * The invariant is declared here, so it is enforced here rather than at each caller.
+ *
+ * READ THE NAME. It is `isOptionalFrames`, not `isFiniteFrames`, because it
+ * deliberately PASSES `undefined` — it guards fields where absent means "take the
+ * default" (`input.duration`, `input.mediaIn`, `addMarker`'s `frame`). It was
+ * called `isFiniteFrames`, and under that name three REQUIRED arguments were
+ * guarded with it; `undefined` is not non-finite, it is absent, so it sailed
+ * through, `Math.round(undefined)` produced NaN, and NaN passes every range test
+ * below. A required argument takes `Number.isFinite` DIRECTLY — see the three
+ * call sites that now do.
+ *
+ * This is the third instance of one shape (CREATIVE §9.6): a helper written from
+ * the optional-field consumer's point of view, then relied on by required-field
+ * callers. The rename is the repair, because it makes the next misuse visible
+ * where it is WRITTEN rather than where it detonates.
  */
-const isFiniteFrames = (v: number | undefined): boolean => v === undefined || Number.isFinite(v);
+const isOptionalFrames = (v: number | undefined): boolean =>
+  v === undefined || Number.isFinite(v);
 
 /**
  * The media kind a clip carries. `streams` outranks the media; the track is the
@@ -457,11 +589,19 @@ export function clipKind(s: StoreState, clip: Clip): MediaKind {
   const streams = clipStreams(clip);
   if (streams === 'audio') return 'audio';
   if (streams === 'video') return 'video';
+  // A title is video, stated rather than derived (CREATIVE §5.1). Falling
+  // through would look up `items['']`, miss, and take the TRACK's kind — which
+  // answers 'audio' for a title dropped on an A-track and would then let
+  // `planMove` agree that it belongs there.
+  if (!clipUsesMedia(clip)) return 'video';
   return s.items[clip.mediaId]?.kind ?? s.tracks[clip.trackId]?.kind ?? 'video';
 }
 
 /** Source frames available, or null when the media has not reported a duration yet. */
 function sourceFrames(s: StoreState, clip: Clip): Frames | null {
+  // A title has no source, so it has no source BOUND: every trim and speed
+  // change on it is legal as far as the media goes (CREATIVE §5.1).
+  if (!clipUsesMedia(clip)) return null;
   const media = s.items[clip.mediaId];
   if (!media || media.durationFrames <= 0) return null;
   return media.durationFrames;
@@ -552,7 +692,58 @@ export function planMove(
   deltaTrackIndex: number,
   primaryTrackId: TrackId | undefined,
 ): PlanResult {
-  if (!isFiniteFrames(deltaFrames)) {
+  const placed = planPlacement(s, ids, deltaFrames, deltaTrackIndex, primaryTrackId);
+  if (!placed.ok) return placed;
+  const { clips: next, movingSet } = placed;
+
+  for (const clip of next) {
+    const blocking = overlapOnTrack(s, clip.trackId, clip.start, clipEnd(clip), movingSet);
+    if (blocking) return { ok: false, reason: 'overlap', blockingClipId: blocking };
+  }
+  for (let i = 0; i < next.length; i += 1) {
+    for (let j = i + 1; j < next.length; j += 1) {
+      const a = next[i];
+      const b = next[j];
+      if (a.trackId === b.trackId && a.start < clipEnd(b) && b.start < clipEnd(a)) {
+        return { ok: false, reason: 'overlap', blockingClipId: b.id };
+      }
+    }
+  }
+  return { ok: true, clips: next };
+}
+
+/**
+ * Where the moving clips WOULD land, with every rule that is not about
+ * occupancy already applied: the link closure, the lock on both origin and
+ * target, the kind match, the lane offset, and start >= 0.
+ *
+ * Extracted so `planMove` and `planInsert` share ONE implementation of those
+ * rules. They differ only in what they do about a collision — `planMove`
+ * refuses, `planInsert` cascades — and a second copy of the placement rules is
+ * how the ghost and the drop start disagreeing about which drops are even legal.
+ *
+ * `movingSet` comes back with the clips because both callers need it to exclude
+ * the movers from their own occupancy walk, and rebuilding it is O(n) for a fact
+ * this function already computed.
+ */
+type PlacementResult =
+  | { ok: true; clips: Clip[]; movingSet: Set<ClipId> }
+  | { ok: false; reason: MoveFailure; blockingClipId: ClipId | null };
+
+function planPlacement(
+  s: StoreState,
+  ids: readonly ClipId[],
+  deltaFrames: number,
+  deltaTrackIndex: number,
+  primaryTrackId: TrackId | undefined,
+): PlacementResult {
+  // REQUIRED, so `Number.isFinite` directly and never `isOptionalFrames` — see
+  // that helper's header. `deltaFrames` has no default, and tolerating
+  // `undefined` let `Math.round(undefined)` produce NaN, which passes the
+  // `start < 0` test below: the clip then lands with a NaN start and poisons
+  // every duration calculation downstream. TypeScript stops this at a typed call
+  // site; the gate scripts are untyped .mjs and would not.
+  if (!Number.isFinite(deltaFrames)) {
     return { ok: false, reason: 'out-of-range', blockingClipId: null };
   }
   // Fails closed when the primary track does not resolve, so a missed JavaScript
@@ -608,20 +799,160 @@ export function planMove(
     next.push({ ...clip, trackId: targetId, start });
   }
 
+  return { ok: true, clips: next, movingSet };
+}
+
+/** Shared so the overwhelmingly common "nothing had to move" answer allocates nothing. */
+const NO_PUSHED: readonly Clip[] = [];
+
+/**
+ * Dry run of an INSERT — CREATIVE §12. Pure, and the same contract `planMove`
+ * has: the ghost calls it on every pointermove to render the displacement, and
+ * `insertClips` calls it again on the drop. ONE implementation, two callers, so
+ * the preview and the commit cannot disagree about what is about to happen.
+ *
+ * The difference from `planMove` is what happens on a collision. `planMove`
+ * refuses; this cascades the occupants to the right and reports them in
+ * `pushed`, which is what the live preview transforms.
+ *
+ * THE SOURCE GAP IS NOT CLOSED, AND THAT IS DELIBERATE (§12.1). Nothing in here
+ * touches the track the clips came FROM: an insert changes the target side only,
+ * and the hole the dragged clip leaves behind stays open. This is the biggest
+ * decision in the feature and it is an ABSENCE, which is exactly the kind of
+ * thing a later "improvement" deletes without noticing. It is not an oversight
+ * and it is not a TODO. Closing it would re-time every clip downstream against
+ * markers, subtitles and every other lane that did not move; it could not be
+ * aimed, because the target moves before you drop; and it would not be
+ * reversible by eye, because dragging back out does not reopen a closed source.
+ * If it is ever wanted it is a separate command — a ripple lift — with its own
+ * name. `check-insert.mjs` asserts this absence positively.
+ *
+ * COST, because this runs on every pointermove: one link-closure (which
+ * early-returns on an ungrouped timeline), then a single linear walk of each
+ * LANDING lane only — `clipsByTrack` is already sorted ascending by start, so
+ * nothing is sorted here beyond the handful of moving clips per lane. Untouched
+ * lanes are never walked, and the common answer allocates no array at all.
+ */
+export function planInsert(
+  s: StoreState,
+  ids: readonly ClipId[],
+  deltaFrames: number,
+  deltaTrackIndex: number,
+  primaryTrackId: TrackId | undefined,
+): InsertPlan {
+  // `snapEnabled` is deliberately NOT consulted. It is a positioning preference,
+  // not a safety, and a planner that also refused on it would give one control
+  // two behaviours. The DRAG path already cannot arrive here with the magnet off
+  // — `applyMove` reaches this function only on `snapped.edge === 'start'`, and
+  // `snapTranslation` reports `edge: null` whenever snapping is suppressed — so
+  // gating here changed nothing for the gesture and only crippled
+  // `edit.insertAtPlayhead`, a NAMED command that has no aim for snapping to
+  // assist. It also failed silently in the wrong words: the refusal came back as
+  // `overlap`, so nothing told the user the magnet was why.
+  const placed = planPlacement(s, ids, deltaFrames, deltaTrackIndex, primaryTrackId);
+  if (!placed.ok) return placed;
+  const { clips: next, movingSet } = placed;
+
+  // Only the lanes the clips actually LAND on (§12.4). A push does not cross
+  // tracks: shifting all six lanes from a one-clip gesture does not preserve
+  // sync anyway, because markers and subtitles do not move with it.
+  const landing = new Map<TrackId, Clip[]>();
   for (const clip of next) {
-    const blocking = overlapOnTrack(s, clip.trackId, clip.start, clipEnd(clip), movingSet);
-    if (blocking) return { ok: false, reason: 'overlap', blockingClipId: blocking };
+    const lane = landing.get(clip.trackId);
+    if (lane) lane.push(clip);
+    else landing.set(clip.trackId, [clip]);
   }
-  for (let i = 0; i < next.length; i += 1) {
-    for (let j = i + 1; j < next.length; j += 1) {
-      const a = next[i];
-      const b = next[j];
-      if (a.trackId === b.trackId && a.start < clipEnd(b) && b.start < clipEnd(a)) {
-        return { ok: false, reason: 'overlap', blockingClipId: b.id };
+
+  let pushed: Clip[] | null = null;
+
+  for (const [trackId, anchored] of landing) {
+    // Usually one. Sorted so `insertAt` is anchored[0] and the walk below is
+    // ordered.
+    if (anchored.length > 1) anchored.sort((a, b) => a.start - b.start);
+
+    // Arrivals are FIXED OBSTACLES, not a second stream to merge. That is the
+    // whole shape of this loop: the user aimed them, so nothing may move them,
+    // and a stationary clip has to clear EVERY one of them rather than only the
+    // ones it happens to meet first. Merging the two streams instead pushes an
+    // occupant clear of the first arrival, then finds the second in its way and
+    // refuses a drop that is perfectly legal — which is what a two-clip
+    // selection dropped on one lane does.
+    const insertAt = anchored[0].start;
+
+    // Arrivals may not overlap EACH OTHER. `planMove` runs the same pairwise
+    // check; here it is the one collision the cascade cannot resolve, because
+    // resolving it would mean moving a clip the user placed.
+    for (let i = 1; i < anchored.length; i += 1) {
+      if (anchored[i].start < anchored[i - 1].start + anchored[i - 1].duration) {
+        return { ok: false, reason: 'overlap', blockingClipId: anchored[i].id };
       }
     }
+
+    // `?? []` rather than the NO_CLIPS constant declared far below: the fallback
+    // is unreachable for a landing track `planPlacement` has already validated,
+    // so it allocates nothing in practice, and a forward reference across 1600
+    // lines is exactly the shape that made the project.ts cycle hard to see.
+    const laneIds = s.clipsByTrack[trackId] ?? [];
+    /** Exclusive end of the last clip this cascade placed. */
+    let frontier = 0;
+
+    for (const id of laneIds) {
+      // The movers are in `anchored` at their NEW positions; their old entries in
+      // the lane index are skipped so a clip is never considered twice.
+      if (movingSet.has(id)) continue;
+      const clip = s.clips[id];
+      if (!clip) continue;
+
+      // §12.3 cascades "each clip C with C.start >= S". A clip that starts
+      // BEFORE the insertion point is upstream of the edit and never moves — so
+      // if it still reaches past that point, the drop landed inside it rather
+      // than on a seam, and there is no insert to compute. `laneIds` is sorted
+      // and non-overlapping, so this catches the case at the one clip that can
+      // cause it. Refuse in the vocabulary an overlapping drop already uses.
+      if (clip.start < insertAt) {
+        if (clip.start + clip.duration > insertAt) {
+          return { ok: false, reason: 'overlap', blockingClipId: clip.id };
+        }
+        continue;
+      }
+
+      // THE CASCADE (§12.3). A clip yields only as far as it must, so the run
+      // stops at the first gap wide enough to absorb the push and nothing beyond
+      // it moves. Every clip keeps its duration; only its start is raised.
+      let start = clip.start < frontier ? frontier : clip.start;
+
+      // …then past every arrival it still overlaps. Bounded and terminating:
+      // each pass strictly increases `start`, and `anchored` is one clip in the
+      // ordinary drag and a small handful at worst.
+      for (;;) {
+        let cleared = true;
+        for (const fixed of anchored) {
+          const fixedEnd = fixed.start + fixed.duration;
+          if (start < fixedEnd && fixed.start < start + clip.duration) {
+            start = fixedEnd;
+            cleared = false;
+          }
+        }
+        if (cleared) break;
+      }
+
+      if (start !== clip.start) {
+        // A push is a WRITE, so a locked track refuses the whole drop (§12.3).
+        // Today this is already implied — a push never crosses tracks, and
+        // `planPlacement` has rejected a locked landing track — but the rule is
+        // stated where the push happens, because that is where it would need to
+        // hold if either of those two facts ever changed.
+        if (s.tracks[clip.trackId]?.locked) {
+          return { ok: false, reason: 'locked', blockingClipId: clip.id };
+        }
+        if (pushed === null) pushed = [];
+        pushed.push({ ...clip, start });
+      }
+      frontier = start + clip.duration;
+    }
   }
-  return { ok: true, clips: next };
+
+  return { ok: true, clips: next, pushed: pushed ?? NO_PUSHED };
 }
 
 /**
@@ -639,7 +970,11 @@ export function planTrim(
   edge: 'in' | 'out',
   nextFrame: Frames,
 ): PlanResult {
-  if (!isFiniteFrames(nextFrame)) {
+  // REQUIRED: there is no "default edge" to fall back to, so `undefined` here is
+  // a caller error, not an omission. Guarded with the optional-tolerant helper it
+  // produced `duration = NaN`, which passes `duration < 1` and writes a poisoned
+  // clip.
+  if (!Number.isFinite(nextFrame)) {
     return { ok: false, reason: 'out-of-range', blockingClipId: null };
   }
   const clip = s.clips[id];
@@ -722,6 +1057,44 @@ const ZOOM_FIT_MARGIN_PX = 24;
 const clampZoom = (zoom: number): PxPerFrame =>
   Number.isFinite(zoom) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom)) : ZOOM_DEFAULT;
 
+/**
+ * Default length of a title card and of a hand-added cue, in SECONDS — converted
+ * to frames at the project fps at the point of use, because a constant in frames
+ * would mean something different in a 24 fps project than in a 60 fps one, and
+ * "five seconds" is the thing that is actually intended.
+ */
+const TITLE_DEFAULT_SECONDS = 5;
+const CUE_DEFAULT_SECONDS = 2;
+
+/**
+ * Cues in, keyed record out, folded onto `base`. THE import path for both
+ * `replaceCues` (base `{}`) and `appendCues` (base the current set), so the two
+ * modes cannot sanitise differently.
+ *
+ * Sanitising rather than validating, the contract `migrateProject` sets: a
+ * malformed cue in a hand-written .srt loses ITSELF, not the import. A cue whose
+ * id already exists is re-minted rather than dropped or allowed to overwrite —
+ * appending a file to itself is a thing users do, and both copies should survive
+ * so they can see the duplication and undo it.
+ */
+function indexCues(
+  cues: readonly SubtitleCue[],
+  base: Record<CueId, SubtitleCue>,
+): Record<CueId, SubtitleCue> {
+  const out: Record<CueId, SubtitleCue> = { ...base };
+  for (const cue of cues) {
+    if (!cue || typeof cue.text !== 'string') continue;
+    const start = Math.max(0, Math.round(cue.start));
+    const end = Math.round(cue.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    const id = typeof cue.id === 'string' && cue.id !== '' && out[cue.id] === undefined
+      ? cue.id
+      : newId('q');
+    out[id] = { id, start, end, text: cue.text };
+  }
+  return out;
+}
+
 /* ----------------------------------------------------------------- creator */
 
 export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
@@ -757,6 +1130,8 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       clips: doc.clips,
       clipsByTrack: doc.clipsByTrack,
       markers: doc.markers,
+      subtitles: doc.subtitles,
+      subtitleStyle: doc.subtitleStyle,
       history,
       historyTxn: null,
       selection: closed.length === pruned.size ? pruned : new Set(closed),
@@ -770,6 +1145,8 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
     clips: {},
     clipsByTrack: {},
     markers: {},
+    subtitles: {},
+    subtitleStyle: DEFAULT_SUBTITLE_STYLE,
 
     zoom: ZOOM_DEFAULT,
     scrollX: 0,
@@ -785,9 +1162,12 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
 
     addClip: (input) => {
       if (
-        !isFiniteFrames(input.start) ||
-        !isFiniteFrames(input.duration) ||
-        !isFiniteFrames(input.mediaIn)
+        // `input.start` is REQUIRED and takes Number.isFinite directly; the other
+        // two are genuinely optional — absent means "the media's full length" and
+        // "from the top" — so they keep the optional-tolerant guard.
+        !Number.isFinite(input.start) ||
+        !isOptionalFrames(input.duration) ||
+        !isOptionalFrames(input.mediaIn)
       ) {
         return { ok: false, reason: 'out-of-range' };
       }
@@ -796,10 +1176,15 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const track = s.tracks[input.trackId];
       if (!track) return { ok: false, reason: 'no-track' };
       if (track.locked) return { ok: false, reason: 'locked' };
+      const isTitle = input.kind === 'title';
       // `streams` outranks the media, exactly as it does in `clipKind`: an
-      // audio-only clip cut from an .mp4 belongs on an A-track.
-      const wantKind: MediaKind =
-        input.streams === 'audio'
+      // audio-only clip cut from an .mp4 belongs on an A-track. A title outranks
+      // both — it is stated 'video' rather than derived, because with no media
+      // to consult the `?? track.kind` fallback would accept ANY track and a
+      // title would land silently on A1 (CREATIVE §5.1).
+      const wantKind: MediaKind = isTitle
+        ? 'video'
+        : input.streams === 'audio'
           ? 'audio'
           : input.streams === 'video'
             ? 'video'
@@ -818,7 +1203,10 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       // (AUDIO-FEATURES §1.3).
       const clip: Clip = {
         id: newId('c'),
-        mediaId: input.mediaId,
+        // '' for a title, never the caller's value: `clipUsesMedia` is what every
+        // media lookup gates on, and it tests BOTH the kind and the id, so a
+        // title carrying a stray mediaId would still resolve one (CREATIVE §5.1).
+        mediaId: isTitle ? '' : input.mediaId,
         trackId: input.trackId,
         start,
         duration,
@@ -829,6 +1217,9 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
         // explicit 'av', and an `undefined`-valued key would still show up in an
         // `in` check and a key count.
         ...(input.streams !== undefined ? { streams: input.streams } : {}),
+        // Conditional for the same reason, and paired: `kind: 'title'` without a
+        // `title` would make `clipIsTitle` true for a clip with nothing to draw.
+        ...(isTitle ? { kind: 'title' as const, title: { ...(input.title ?? DEFAULT_TITLE) } } : {}),
       };
 
       if (violatesSource(s, clip)) return { ok: false, reason: 'no-source' };
@@ -843,7 +1234,8 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
     },
 
     insertMediaAt: (mediaId, start, preferredTrackId) => {
-      if (!isFiniteFrames(start)) return { ok: false, reason: 'out-of-range' };
+      // REQUIRED: `start` names where the media goes and has no default.
+      if (!Number.isFinite(start)) return { ok: false, reason: 'out-of-range' };
       const s = get();
       const media = s.items[mediaId];
       if (!media) return { ok: false, reason: 'no-track' };
@@ -901,6 +1293,31 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       if (Math.round(deltaFrames) === 0 && deltaTrackIndex === 0) return { ok: true };
       pushHistory();
       set(withClips(docOf(get()), plan.clips));
+      get().markDirty();
+      return { ok: true };
+    },
+
+    insertClips: (ids, deltaFrames, deltaTrackIndex, primaryTrackId) => {
+      const plan = planInsert(get(), ids, deltaFrames, deltaTrackIndex, primaryTrackId);
+      if (!plan.ok) return { ok: false, reason: plan.reason };
+      // A no-op drop must not cost an undo slot. Both halves are needed: a
+      // gesture that ended where it started moves nothing AND pushes nothing.
+      if (
+        plan.pushed.length === 0 &&
+        Math.round(deltaFrames) === 0 &&
+        deltaTrackIndex === 0
+      ) {
+        return { ok: true };
+      }
+
+      // ONE history entry, and it needs no transaction to be one: `pushHistory`
+      // snapshots once and the moved clips and every displaced clip land in a
+      // SINGLE `withClips` write. `detachAudio` needs `beginHistory` because it
+      // calls `addClip` in a loop and each of those commits on its own; nothing
+      // here calls a sub-action, so there is no second write to fold in.
+      // Splitting this into a write per lane is the mutation the gate kills.
+      pushHistory();
+      set(withClips(docOf(get()), [...plan.clips, ...plan.pushed]));
       get().markDirty();
       return { ok: true };
     },
@@ -1016,6 +1433,18 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
           mediaIn: clip.mediaIn + Math.round(leftDuration * speed),
           properties: { ...clip.properties },
         };
+        // CREATIVE §4.1 — a transition belongs to an EDGE, and a split creates
+        // two new edges at the cut that nobody authored anything on. Both halves
+        // inherit both keys from `{ ...clip }`, so each is STRIPPED rather than
+        // assigned: without this the left half would fade out at a cut in the
+        // middle of the shot and the right half would fade in from black at it,
+        // which is a transition the user never asked for appearing at every
+        // split. The clamp is not re-run — a half is shorter, so its surviving
+        // transition may now exceed a third of it, and §4.3's rule is that the
+        // authored value is kept and the BUILD clamps. Re-clamping here would
+        // shorten it permanently for an edit that is often undone.
+        if (left.transitionOut !== undefined) delete left.transitionOut;
+        if (right.transitionIn !== undefined) delete right.transitionIn;
         // The LEFT half keeps the original group; the RIGHT halves of one source
         // group form a new one. Both halves inherit `linkId` from `{ ...clip }`,
         // so the right half is REASSIGNED rather than assigned — otherwise the
@@ -1125,7 +1554,24 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
         const linkId = source.linkId ?? newId('g');
         const twin = get().clips[twinId];
         detached.push({ ...source, streams: 'video', linkId });
-        if (twin) detached.push({ ...twin, linkId });
+        if (twin) {
+          // A fade is "up from black AND SILENCE" (CREATIVE §4.2), so a detach
+          // that left the ramp on the picture alone would produce a shot that
+          // fades in over sound already at full level — the same
+          // applied-in-two-of-three-places bug §9.4 is about. `addClip` carries
+          // no transitions, so the twin acquires them here, in the one write
+          // that already exists.
+          //
+          // A DISSOLVE is deliberately not copied. It names a relationship with
+          // the clip immediately before this one on the SAME track (§4.3), and
+          // the twin's track is a different one that generally has no such
+          // neighbour; copying it would claim a cross-dissolve with whatever
+          // happened to be sitting there, or with nothing at all.
+          const withRamps: Clip = { ...twin, linkId };
+          if (source.transitionIn?.kind === 'fade') withRamps.transitionIn = source.transitionIn;
+          if (source.transitionOut !== undefined) withRamps.transitionOut = source.transitionOut;
+          detached.push(withRamps);
+        }
       }
       const doc = withClips(docOf(get()), detached);
       // …and the selection is re-closed in the SAME write. `selectMany` and
@@ -1511,6 +1957,37 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       get().markDirty();
     },
 
+    setTrackVolume: (id, volume) => {
+      const s = get();
+      const track = s.tracks[id];
+      if (!track) return;
+      // NaN is not a fader position. It would survive both comparisons below,
+      // reach the mix as a multiplier, and silence the track with no way to see
+      // why — the same reason every frame argument in this file is guarded.
+      if (!Number.isFinite(volume)) return;
+      const next = volume < 0 ? 0 : volume > 2 ? 2 : volume;
+      if (next === trackVolume(track)) return;
+
+      // Unity STRIPS the key rather than storing `1`, the contract `streams` and
+      // `linkId` set (CREATIVE §1.1): an own property with a default value is a
+      // redundant field in every future save, and `trackVolume` reads its absence
+      // as unity anyway. Stripped, not set to undefined — an undefined-valued own
+      // property survives an `in` check and a key count but is dropped by
+      // JSON.stringify, so the in-memory track and the saved track would disagree
+      // about their own shape.
+      let updated: Track;
+      if (next === 1) {
+        const { volume: _drop, ...rest } = track;
+        updated = rest;
+      } else {
+        updated = { ...track, volume: next };
+      }
+
+      pushHistory();
+      set({ tracks: { ...s.tracks, [id]: updated } });
+      get().markDirty();
+    },
+
     /* ----------------------------------------------------------------- view */
 
     setZoom: (zoom) => {
@@ -1553,7 +2030,8 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
     /* -------------------------------------------------------------- markers */
 
     addMarker: (frame, label) => {
-      if (!isFiniteFrames(frame)) return null;
+      // Genuinely optional: absent means "at the playhead", two lines below.
+      if (!isOptionalFrames(frame)) return null;
       const s = get();
       const at = Math.max(0, Math.round(frame ?? s.playhead));
       const existing = Object.values(s.markers).find((m) => m.frame === at);
@@ -1582,6 +2060,11 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const next = new Set<ClipId>(s.offlineClipIds);
       let changed = false;
       for (const clip of Object.values(s.clips)) {
+        // CREATIVE §9.4 — `clipUsesMedia`, not `clip.mediaId === mediaId` alone.
+        // The equality would already be false for a title's '', but the gate is
+        // stated at every one of these sites rather than left to hold by
+        // accident, because the accident is one `removeItem('')` away.
+        if (!clipUsesMedia(clip)) continue;
         if (clip.mediaId === mediaId && !next.has(clip.id)) {
           next.add(clip.id);
           changed = true;
@@ -1594,6 +2077,11 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const s = get();
       const offline = new Set<ClipId>();
       for (const clip of Object.values(s.clips)) {
+        // THE lookup CREATIVE §9.4 names first. A title resolves no MediaItem,
+        // so without this gate `s.items['']` misses, every title on the timeline
+        // joins the offline set, and the lane paints the user's own titles as
+        // missing footage.
+        if (!clipUsesMedia(clip)) continue;
         const media = s.items[clip.mediaId];
         if (!media || media.status === 'error') offline.add(clip.id);
       }
@@ -1653,7 +2141,19 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
         if (!clip) continue;
         if (s.tracks[clip.trackId]?.locked) return { ok: false, reason: 'locked' };
 
-        const properties: ClipProperties = { ...clip.properties, ...patch };
+        // THE same sanitiser the load path uses, so a value the migration would
+        // accept and one the store will hold cannot drift apart. Two things
+        // about this call are load-bearing:
+        //
+        // 1. The patch is MERGED ONTO the clip's own properties first, never
+        //    passed in alone. `normalizeClipProperties` is TOTAL — it fills every
+        //    absent key from the defaults — so handing it a partial patch would
+        //    snap every field the user did not touch back to unity, and dragging
+        //    `contrast` would silently reset `scale`, `speed` and `volume`.
+        // 2. It runs BEFORE the geometry maths below: `newSpeed` rescales
+        //    `duration`, so a rescale computed from an unclamped 0 or 40 would
+        //    give a length the clamped speed does not explain.
+        const properties = normalizeClipProperties({ ...clip.properties, ...patch });
         const oldSpeed = clip.properties.speed || 1;
         const newSpeed = properties.speed || 1;
         // Source consumption is held constant, so a speed change moves the out edge
@@ -1688,6 +2188,211 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       if (!clip || trimmed === '' || trimmed === clip.name) return;
       pushHistory();
       set({ clips: { ...s.clips, [id]: { ...clip, name: trimmed } } });
+      get().markDirty();
+    },
+
+    /* ---------------------------------------------------- transitions (§4) */
+
+    setClipTransition: (clipId, edge, t) => {
+      const s = get();
+      const clip = s.clips[clipId];
+      if (!clip) return;
+      if (s.tracks[clip.trackId]?.locked) {
+        get().setNotice({
+          tone: 'warning',
+          title: 'Could not add transition',
+          message: 'Track is locked',
+        });
+        return;
+      }
+      const current = edge === 'in' ? clip.transitionIn : clip.transitionOut;
+
+      if (t === null) {
+        if (current === undefined) return;
+        // STRIPPED, never set to undefined — the rule `unlinkClips` states: an
+        // own property with an undefined value survives an `in` check and a key
+        // count but is dropped by JSON.stringify, so the in-memory clip and the
+        // saved clip would disagree about their own shape.
+        const next: Clip = { ...clip };
+        if (edge === 'in') delete next.transitionIn;
+        else delete next.transitionOut;
+        pushHistory();
+        set(withClips(docOf(get()), [next]));
+        get().markDirty();
+        return;
+      }
+
+      // CREATIVE §4.3 — REFUSED, not upgraded. A dissolve is a cross-dissolve
+      // with the clip before this one and is authored on the INCOMING clip
+      // alone, so an outgoing one names the wrong side of the cut. Rewriting it
+      // to a fade would give the caller a transition it did not ask for, at a
+      // length it chose for a different effect, and would hide the mistake.
+      if (edge === 'out' && t.kind !== 'fade') {
+        get().setNotice({
+          tone: 'warning',
+          title: 'Could not add transition',
+          message: 'A cross dissolve belongs on the clip it dissolves into',
+        });
+        return;
+      }
+      if (t.kind !== 'fade' && t.kind !== 'dissolve') return;
+      if (!Number.isFinite(t.frames)) return;
+
+      // A transition longer than a third of the clip leaves less picture than
+      // ramp; the same third is what §4.4's default is clamped to. This is the
+      // AUTHOR-time clamp on the clip's own length, which is a fact the store
+      // owns. It is not the §4.3 handle clamp — that one depends on how much
+      // unused source the neighbour has, and belongs to the build, so that
+      // trimming the neighbour longer later restores what the user asked for.
+      const longest = Math.max(1, Math.floor(clip.duration / 3));
+      const frames = Math.min(longest, Math.max(1, Math.round(t.frames)));
+
+      if (current?.kind === t.kind && current.frames === frames) return;
+
+      const transition: Transition = { kind: t.kind, frames };
+      const next: Clip =
+        edge === 'in'
+          ? { ...clip, transitionIn: transition }
+          : { ...clip, transitionOut: transition };
+      pushHistory();
+      set(withClips(docOf(get()), [next]));
+      get().markDirty();
+    },
+
+    /* --------------------------------------------------------- titles (§5) */
+
+    addTitleClip: (trackId, startFrame) => {
+      const s = get();
+      // Five seconds is long enough to read a card and short enough to trim
+      // rather than fight. In FRAMES at the project fps, because everything in
+      // this store is whole frames (model.ts §2.1).
+      const duration = Math.max(1, Math.round(s.fps * TITLE_DEFAULT_SECONDS));
+      // No lock or kind pre-check: `addClip` already refuses a locked track, a
+      // missing track and — through `wantKind` — an audio one, so a second copy
+      // of those rules here could only ever disagree with the funnel. The
+      // CreateResult's reason is dropped because §9.2 fixes this signature at
+      // `ClipId | null`; the caller that needs the sentence asks `addClip`.
+      const result = get().addClip({
+        mediaId: '',
+        trackId,
+        start: startFrame,
+        duration,
+        mediaIn: 0,
+        // The clip NAME is the default text, not a live mirror of it: `name` is
+        // user-renameable (`renameClip`) and a mirror would silently overwrite a
+        // rename on the next text edit.
+        name: DEFAULT_TITLE.text,
+        kind: 'title',
+        title: { ...DEFAULT_TITLE },
+      });
+      return result.ok ? result.id : null;
+    },
+
+    setClipTitle: (clipId, patch) => {
+      const s = get();
+      const clip = s.clips[clipId];
+      // `clip.title` is checked as well as `clipIsTitle`, and not as a
+      // formality: it is what narrows `TitleSpec | undefined` for the spread,
+      // and a `kind:'title'` clip with no spec is the one shape `migrateProject`
+      // cannot produce but a hand-edited file can.
+      if (!clip || !clipIsTitle(clip) || clip.title === undefined) return;
+      if (s.tracks[clip.trackId]?.locked) {
+        get().setNotice({ tone: 'warning', title: 'Could not edit title', message: 'Track is locked' });
+        return;
+      }
+      const title: TitleSpec = { ...clip.title, ...patch };
+      pushHistory();
+      set(withClips(docOf(get()), [{ ...clip, title }]));
+      get().markDirty();
+    },
+
+    /* ------------------------------------------------------ subtitles (§6) */
+
+    addCue: (startFrame) => {
+      const s = get();
+      // The signature is `CueId`, not `CueId | null`, so there is no refusal to
+      // return: a non-finite frame falls back to the playhead, which is where
+      // the `+` button means anyway.
+      const at = Number.isFinite(startFrame) ? startFrame : s.playhead;
+      const start = Math.max(0, Math.round(at));
+      const cue: SubtitleCue = {
+        id: newId('q'),
+        start,
+        end: start + Math.max(1, Math.round(s.fps * CUE_DEFAULT_SECONDS)),
+        text: '',
+      };
+      pushHistory();
+      set({ subtitles: { ...s.subtitles, [cue.id]: cue } });
+      get().markDirty();
+      return cue.id;
+    },
+
+    setCue: (id, patch) => {
+      const s = get();
+      const cue = s.subtitles[id];
+      if (!cue) return;
+      const start = patch.start !== undefined ? Math.max(0, Math.round(patch.start)) : cue.start;
+      const end = patch.end !== undefined ? Math.round(patch.end) : cue.end;
+      const text = patch.text !== undefined ? patch.text : cue.text;
+      // `end > start` is the model's invariant (model.ts, SubtitleCue), so it is
+      // enforced on every write rather than left to the panel: a zero-length or
+      // inverted cue is one `formatSrt` writes as a timestamp no player accepts,
+      // and dragging an end handle past a start is a gesture, not a mistake to
+      // punish — the write is refused whole and the cue keeps its last good times.
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+      if (start === cue.start && end === cue.end && text === cue.text) return;
+      pushHistory();
+      set({ subtitles: { ...s.subtitles, [id]: { ...cue, start, end, text } } });
+      get().markDirty();
+    },
+
+    removeCue: (id) => {
+      const s = get();
+      if (!s.subtitles[id]) return;
+      pushHistory();
+      const subtitles = { ...s.subtitles };
+      delete subtitles[id];
+      set({ subtitles });
+      get().markDirty();
+    },
+
+    replaceCues: (cues) => {
+      const s = get();
+      const next = indexCues(cues, {});
+      // An import that yields the same empty set as it replaces is not an edit,
+      // and must not cost an undo slot on a project with no subtitles.
+      if (Object.keys(next).length === 0 && Object.keys(s.subtitles).length === 0) return;
+      pushHistory();
+      set({ subtitles: next });
+      get().markDirty();
+    },
+
+    appendCues: (cues) => {
+      const s = get();
+      const merged = indexCues(cues, s.subtitles);
+      if (Object.keys(merged).length === Object.keys(s.subtitles).length) return;
+      pushHistory();
+      set({ subtitles: merged });
+      get().markDirty();
+    },
+
+    setSubtitleStyle: (patch) => {
+      const s = get();
+      // Merged onto the current style before normalising, for the reason
+      // `updateClipProperties` merges: `subtitleStyleOf` is total, so a bare
+      // patch would reset the three fields the caller did not name.
+      const next = subtitleStyleOf({ ...s.subtitleStyle, ...patch });
+      const current = s.subtitleStyle;
+      if (
+        next.sizePct === current.sizePct &&
+        next.color === current.color &&
+        next.outline === current.outline &&
+        next.marginPct === current.marginPct
+      ) {
+        return;
+      }
+      pushHistory();
+      set({ subtitleStyle: next });
       get().markDirty();
     },
 
@@ -1761,12 +2466,20 @@ export const createTimelineSlice: SliceCreator<TimelineSlice> = (set, get) => {
       const markers: Record<MarkerId, Marker> = {};
       for (const m of p.markers) markers[m.id] = m;
 
+      // Through the same funnel an import uses, against an EMPTY base: a
+      // .veproj whose cues were hand-edited into an inverted pair is a project
+      // that opens with that cue dropped, not one that opens with a cue the
+      // subtitle burn-in will choke on.
+      const subtitles = indexCues(p.subtitles, {});
+
       set({
         tracks,
         trackOrder,
         clips,
         clipsByTrack: buildClipsByTrack(clips, trackOrder),
         markers,
+        subtitles,
+        subtitleStyle: subtitleStyleOf(p.subtitleStyle),
         selection: EMPTY_SELECTION,
         history: { past: [], future: [] },
         historyTxn: null,
@@ -1904,6 +2617,7 @@ export const selectDetachableClipIds = (s: StoreState, ids?: Iterable<ClipId>): 
   for (const id of ids ?? s.selection) {
     const clip = s.clips[id];
     if (!clip) continue;
+    if (!clipUsesMedia(clip)) continue; // a title has no audio to detach (CREATIVE §9.4)
     if (clipStreams(clip) !== 'av') continue; // already detached, or already audio-only
     const track = s.tracks[clip.trackId];
     if (!track || track.kind !== 'video' || track.locked) continue;
@@ -1932,9 +2646,14 @@ export function detachRefusal(s: StoreState, ids?: Iterable<ClipId>): Notice {
     return { tone: 'warning', title: 'Could not detach', message: 'Track is locked' };
   }
   const unlocked = onVideo.filter((c) => s.tracks[c.trackId]?.locked !== true);
+  // A title reaches this sentence too, and it is the true one: it has no audio.
+  // `s.items['']` is the lookup §9.4 forbids, so the predicate asks
+  // `clipUsesMedia` first and never performs it.
   if (
     unlocked.length > 0 &&
-    unlocked.every((c) => clipStreams(c) === 'av' && s.items[c.mediaId]?.hasAudio !== true)
+    unlocked.every(
+      (c) => !clipUsesMedia(c) || (clipStreams(c) === 'av' && s.items[c.mediaId]?.hasAudio !== true),
+    )
   ) {
     return {
       tone: 'warning',

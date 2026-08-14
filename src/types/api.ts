@@ -7,7 +7,18 @@
    string, which is what stops the two from drifting.
 --------------------------------------------------------------------------- */
 
-import type { Clip, Frames, MediaError, MediaId, MediaKind, ProjectFile, Track } from './model';
+import type {
+  Clip,
+  ClipId,
+  Frames,
+  MediaError,
+  MediaId,
+  MediaKind,
+  ProjectFile,
+  SubtitleCue,
+  SubtitleStyle,
+  Track,
+} from './model';
 
 export const CH = {
   windowMinimize: 'window:minimize',
@@ -23,6 +34,14 @@ export const CH = {
   projectSave: 'project:save',
   projectOpen: 'project:open',
   projectPickDir: 'project:pick-directory',
+  /** CREATIVE §6.4 — write a sidecar .srt. Its own channel, not part of
+   *  `projectSave`: it produces a different file, for a different program, and
+   *  it must work with an empty timeline and no project path. */
+  subtitlesExport: 'subtitles:export',
+  /** CREATIVE §6.5 — read a sidecar .srt through a NATIVE dialog. Symmetric with
+   *  `subtitlesExport`, and its own channel for the same reasons: a different
+   *  file, for a different program, usable with an empty timeline. */
+  subtitlesImport: 'subtitles:import',
   projectOpenPath: 'project:open-path', // main -> renderer
   exportStart: 'export:start',
   exportCancel: 'export:cancel',
@@ -133,6 +152,16 @@ export interface ExportSettings {
   codec: VideoCodec | AudioCodec;
   quality: 'draft' | 'good' | 'best';
   range: 'entire' | 'inout';
+  /**
+   * CREATIVE §6.3. Burn the project's subtitles into the picture.
+   *
+   * A SETTING and not a project property: the same edit is exported once with
+   * open captions for social and once clean with a sidecar `.srt`, and which one
+   * you are making is a fact about this export, not about the project.
+   *
+   * Ignored by an audio-only codec, where there is no picture to burn into.
+   */
+  burnSubtitles: boolean;
 }
 
 /**
@@ -193,6 +222,25 @@ export interface ExportSource {
 }
 
 /**
+ * A title clip's pixels, rasterised BY THE RENDERER with the same
+ * `src/lib/titleRaster.ts` that drew the preview — CREATIVE §5.2. Main decodes
+ * it beside the filter script and feeds it as an ordinary `-loop 1` input, so
+ * the exported title is pixel-for-pixel what the user was looking at.
+ *
+ * Keyed by CLIP id, not media id: a title has no media, and two title clips with
+ * identical text are still two clips that can be graded and faded apart.
+ *
+ * `png` is base64 WITHOUT a `data:` prefix. The prefix would be 22 bytes of
+ * nothing repeated per title across an IPC boundary, and main would only strip it.
+ */
+export interface ExportTitle {
+  clipId: ClipId;
+  png: string;
+  width: number;
+  height: number;
+}
+
+/**
  * The timeline, flattened for the encoder. Every frame field is in PROJECT frames at
  * `fps`; MediaItem.fps is never carried, because no frame calculation may read it
  * (PLAN §2.4, the source-mapping invariant).
@@ -210,6 +258,11 @@ export interface ExportDocument {
   /** Every clip in the project. The builder filters by range and by track flags. */
   clips: Clip[];
   sources: ExportSource[];
+  /** One per title clip in the project. Empty when there are none. */
+  titles: ExportTitle[];
+  /** The project's cues, in timeline frames. The builder offsets and clips them to range. */
+  subtitles: SubtitleCue[];
+  subtitleStyle: SubtitleStyle;
 }
 
 /* ---- the request -------------------------------------------------------- */
@@ -245,7 +298,46 @@ export interface ExportProgressEvent {
    * result, which is what the dialog renders (EXPORT §6, RENDERER).
    */
   outputPath?: string;
+  /**
+   * CREATIVE §4.3. Things the build had to change about what the user authored,
+   * and could honour only in part — a cross dissolve with no source handle left,
+   * exported as a fade. Set on the FIRST event a job emits after the graph is
+   * built, which in practice is `phase: 'encoding'`, and not repeated.
+   *
+   * Distinct from `message`, which belongs to `phase: 'error'` and means the
+   * export did not happen. A notice means the export DID happen and is not quite
+   * the edit — which is the only kind of discrepancy this project is willing to
+   * ship, and only because it is stated. Without this field §4.3's promise that
+   * the build "reports it once in the notice channel" was a promise the contract
+   * could not keep, and the message reached a `console.warn` nobody reads.
+   *
+   * Optional, and absent rather than `[]` when there is nothing to say: an empty
+   * array would render as an empty region in a dialog that branches on presence.
+   */
+  notices?: string[];
 }
+
+/**
+ * CREATIVE §6.5. A discriminated union rather than
+ * `{ ok, text?, path?, reason? }`, for the reason `UpdatePhase` is one: the
+ * failure arms carry no text and the success arm carries no reason, and a flat
+ * shape would make every consumer test a field the type says might be there in
+ * a case where it never is.
+ *
+ * Deliberately NOT `OpenResult`. That type carries a `ProjectFile` this has no
+ * use for and a `bad-format` code that CANNOT occur here — `parseSrt` is
+ * tolerant by contract (§6.2), so an unintelligible file yields zero cues, not
+ * an error. Reusing it would oblige every caller to handle an arm that is
+ * unreachable, which is how an unreachable arm eventually gets reached.
+ *
+ * `text` is the file's bytes decoded as UTF-8 **verbatim, BOM included**. Main
+ * does not strip it: §6.2 documents `parseSrt` as tolerant of a BOM and that
+ * tolerance is tested, so stripping it in main would put a second, untested
+ * normaliser in front of the tested one — and the two would drift.
+ */
+export type SubtitleImportResult =
+  | { ok: true; text: string; path: string }
+  | { ok: false; reason: 'cancelled' | 'read-failed' };
 
 export interface ExportBridge {
   /**
@@ -479,6 +571,18 @@ export interface EditorAPI {
     open(path?: string): Promise<OpenResult>;
     pickDirectory(): Promise<string | null>;
     /**
+     * CREATIVE §6.5 — pick and read a .srt through the NATIVE dialog. Returns
+     * the file's text; PARSING stays in the renderer, because `parseSrt` needs
+     * the project `fps` to round cue times to whole frames (§6.2) and `fps`
+     * lives in the store.
+     *
+     * Optional for the reason every other capability on this bridge is: the
+     * stub bridge the browser dev target runs against does not implement it,
+     * and a required member would make that a type error rather than a missing
+     * menu item.
+     */
+    importSubtitles?(): Promise<SubtitleImportResult>;
+    /**
      * The OS handed the app a .veproj — a double-click on Windows/Linux (argv,
      * including the argv of a second launch while this one is running) or the
      * darwin `open-file` event. Main holds the path until the renderer has
@@ -508,6 +612,18 @@ export interface EditorAPI {
     autosaveRetire?(throughSeq: number): Promise<void>;
     /** Answers a recovery offer from a PREVIOUS session. */
     autosaveResolveOffer?(sessionId: string, how: 'restored' | 'discarded'): Promise<void>;
+
+    /**
+     * CREATIVE §6.4. Raises a save picker and writes `text` verbatim, UTF-8 with
+     * no BOM. The renderer has already produced the SubRip with `formatSrt`, so
+     * main writes bytes and does not know what SubRip is — the same division
+     * `project.save` uses.
+     *
+     * OPTIONAL, like every other bridge added after the fixture was written, so
+     * `src/dev/fixtures.ts` needs no change and `dev:web` keeps working. The menu
+     * item feature-detects it.
+     */
+    exportSubtitles?(text: string, suggestedName: string): Promise<SaveResult>;
   };
   /**
    * PRESENT in Electron once electron/ipc/export.ts lands. Absent under dev:web,

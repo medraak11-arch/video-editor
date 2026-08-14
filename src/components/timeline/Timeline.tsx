@@ -40,7 +40,26 @@ import { Track } from './Track';
 import { Playhead, PlayheadHandle, usePlayheadSync } from './Playhead';
 import { ClipContextMenu } from './ClipContextMenu';
 import type { ClipContextMenuHandle } from './ClipContextMenu';
+import { TrackContextMenu } from './TrackContextMenu';
+import type { TrackContextMenuHandle } from './TrackContextMenu';
 import { useTimelineInteraction } from './useTimelineInteraction';
+import { useRegionShortcuts } from './useRegionShortcuts';
+import type { RegionDispatchers } from './useRegionShortcuts';
+import { addTitleAtPlayhead } from './titleCommand';
+import { addCueAtPlayhead } from './cueCommand';
+import { insertSelectionAtPlayhead } from './insertCommand';
+
+/**
+ * The registry rows this region dispatches itself (`shortcuts.ts`, `handler`).
+ * Module scope, so the object is allocated once and is never a reason to rebind
+ * the listener; the type is exhaustive, so a new region row that nobody wired
+ * up is a typecheck failure rather than a dead key.
+ */
+const REGION_DISPATCHERS: RegionDispatchers = {
+  'edit.addTitle': addTitleAtPlayhead,
+  'subtitle.addCue': addCueAtPlayhead,
+  'edit.insertAtPlayhead': insertSelectionAtPlayhead,
+};
 
 export function Timeline(): ReactElement {
   const trackOrder = useEditorStore((s) => s.trackOrder);
@@ -59,6 +78,7 @@ export function Timeline(): ReactElement {
     return null;
   });
 
+  const root = useRef<HTMLDivElement>(null);
   const laneViewport = useRef<HTMLDivElement>(null);
   const laneContent = useRef<HTMLDivElement>(null);
   const headsContent = useRef<HTMLDivElement>(null);
@@ -77,8 +97,10 @@ export function Timeline(): ReactElement {
   const dragBadgeText = useRef<HTMLSpanElement>(null);
   const trimBadge = useRef<HTMLDivElement>(null);
   const dropLine = useRef<HTMLDivElement>(null);
+  const insertCaret = useRef<HTMLDivElement>(null);
 
   const clipMenu = useRef<ClipContextMenuHandle>(null);
+  const trackMenu = useRef<TrackContextMenuHandle>(null);
 
   const [viewportWidth, setViewportWidth] = useState(0);
 
@@ -97,11 +119,17 @@ export function Timeline(): ReactElement {
       dragBadgeText,
       trimBadge,
       dropLine,
+      insertCaret,
     }),
     [],
   );
 
-  const interaction = useTimelineInteraction(overlayRefs, clipMenu);
+  const interaction = useTimelineInteraction(overlayRefs, clipMenu, trackMenu);
+
+  // Bound to `.tl-root` so it covers the toolbar and the track heads as well as
+  // the lanes — the rows are scoped to the whole timeline, so the listener has
+  // to sit at the whole timeline.
+  useRegionShortcuts(root, REGION_DISPATCHERS);
 
   usePlayheadSync(playheadLine, playheadHead);
 
@@ -224,7 +252,7 @@ export function Timeline(): ReactElement {
   const rovingClipId: ClipId | null = focusedStillExists ? interaction.focusedClipId : firstClipId;
 
   return (
-    <div className="tl-root">
+    <div className="tl-root" ref={root}>
       <TimelineToolbar laneViewportRef={laneViewport} />
 
       <div className="tl-grid">
@@ -244,7 +272,7 @@ export function Timeline(): ReactElement {
         <div className="tl-heads" onFocus={onHeadFocus}>
           <div className="tl-heads-content" ref={headsContent} style={{ height: `${laneHeight}px` }}>
             {rows.map((row) => (
-              <TrackHead key={row.id} trackId={row.id} top={row.top} />
+              <TrackHead key={row.id} trackId={row.id} top={row.top} menu={trackMenu} />
             ))}
           </div>
         </div>
@@ -292,6 +320,15 @@ export function Timeline(): ReactElement {
 
           <ClipContextMenu ref={clipMenu} />
 
+          {/* Mounted HERE, beside the clip menu, and not inside `.tl-heads` —
+              even though the track heads are one of its two triggers.
+              `.tl-heads-content` carries `will-change: transform`, which makes
+              it the containing block for a `position: fixed` descendant, and the
+              menu's zero-size anchor is positioned in VIEWPORT coordinates.
+              Inside the head column it would resolve them against a scrolled
+              element and open the menu somewhere the pointer has never been. */}
+          <TrackContextMenu ref={trackMenu} />
+
           <Playhead ref={playheadLine} />
 
           <div className="tl-lanes-overflow" ref={overflowRail} hidden aria-hidden="true">
@@ -303,6 +340,11 @@ export function Timeline(): ReactElement {
           <div className="tl-refuse-bar" ref={refuseBar} hidden aria-hidden="true" />
           <div className="tl-refuse-lane" ref={refuseLane} hidden aria-hidden="true" />
           <div className="tl-drop-line" ref={dropLine} hidden aria-hidden="true" />
+          {/* Mounted after the refusal marks and before the badges, so it obeys
+              the same DOM-order rule the rest of the gesture-feedback plane
+              does. It cannot coexist with either refusal mark anyway — an
+              insert IS the legal outcome, so nothing is being refused. */}
+          <div className="tl-insert-caret" ref={insertCaret} hidden aria-hidden="true" />
 
           <div className="tl-drag-badge type-label" ref={dragBadge} hidden role="status">
             <span className="tl-drag-badge-icon" data-icon="alert" aria-hidden="true">

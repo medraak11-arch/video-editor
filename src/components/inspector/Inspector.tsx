@@ -18,16 +18,47 @@ import type { ReactElement } from 'react';
 import { Panel } from '../ui';
 import { useEditorStore } from '../../state/store';
 import type { Clip, LinkId } from '../../types/model';
-import { clipStreams } from '../../types/model';
+import { clipIsTitle, clipStreams } from '../../types/model';
 import { ClipPropertyRow } from './ClipPropertyRow';
+import { EffectsGroup } from './EffectsGroup';
+import { GradeGroup } from './GradeGroup';
 import { InspectorGroup } from './InspectorGroup';
 import { NamePropertyRow } from './NamePropertyRow';
 import { ProjectProperties } from './ProjectProperties';
+import { SubtitlesGroup } from './SubtitlesGroup';
+import { TitleGroup } from './TitleGroup';
+import { TransitionsGroup } from './TransitionsGroup';
 
 /* Stored -> shown, and back. Declared at module scope so the identities stay
    stable across renders and the value memo in ClipPropertyRow holds. */
 const toPercent = (stored: number): number => stored * 100;
 const fromPercent = (shown: number): number => shown / 100;
+
+/**
+ * BOTH BRANCHES RENDER THIS — CREATIVE §6.6.3a.
+ *
+ * Subtitles are a property of the PROGRAMME (§6.1): they survive re-cutting the
+ * footage underneath them and belong to no clip. Gating them on an empty
+ * selection was wrong on that ground alone — a user with a clip selected had no
+ * route to their own subtitles at all — and §6.6 turned it into a defect with
+ * teeth: `C` would create a cue, open a group that was not mounted, and leave
+ * `focusCueId` standing with no consumer, so the caret jumped later at a moment
+ * the user could not connect to anything.
+ *
+ * One component rather than the same three lines twice, so the two branches
+ * cannot drift into disagreeing about the heading, the id or the disclosure.
+ *
+ * Still COLLAPSED by default in both: it is the largest surface in the panel,
+ * and a resident four-hundred-row cue list is the wall-of-controls
+ * anti-reference wearing a different hat. Reachable is not the same as resident.
+ */
+function SubtitlesSection(): ReactElement {
+  return (
+    <InspectorGroup id="subtitles" heading="Subtitles">
+      <SubtitlesGroup />
+    </InspectorGroup>
+  );
+}
 
 export function Inspector(): ReactElement {
   const selection = useEditorStore((s) => s.selection);
@@ -67,6 +98,19 @@ export function Inspector(): ReactElement {
   const videoOnly = uniformStreams === 'video';
 
   /**
+   * A title clip is a clip with no media (CREATIVE §5.1), so it gets the Title
+   * group and does NOT get the grade, effects or transition groups withheld —
+   * a title flows through the same chain as any other input and every one of
+   * those applies to it. What it does not get is anything that reads its media,
+   * and nothing in this component does.
+   *
+   * `clipIsTitle` is THE reader (model.ts); `kind === 'title'` is never written
+   * out here. The test is `every`, not `some`: a mixed bag of a title and a
+   * media clip has no shared TitleSpec, and `setClipTitle` takes one clip.
+   */
+  const allTitles = clips.length > 0 && clips.every(clipIsTitle);
+
+  /**
    * The group's size, spelled out on the same pattern (docs/LINKING.md §8.5).
    * One number per GROUP, never one number across groups: "Linked, 4 clips" over
    * two independent pairs asserts a four-member group that does not exist, which
@@ -99,9 +143,12 @@ export function Inspector(): ReactElement {
     <Panel className="ve-inspector" heading={heading} scroll padded={false}>
       <div className="ve-inspector-groups">
         {clips.length === 0 ? (
-          <InspectorGroup id="project" heading="Project">
-            <ProjectProperties />
-          </InspectorGroup>
+          <>
+            <InspectorGroup id="project" heading="Project">
+              <ProjectProperties />
+            </InspectorGroup>
+            <SubtitlesSection />
+          </>
         ) : (
           <>
             {/* Above Transform and outside every group: the file's name is the
@@ -175,6 +222,19 @@ export function Inspector(): ReactElement {
               </InspectorGroup>
             )}
 
+            {/* Directly under the identity block and above Transform: for a
+                title, the TEXT is what the clip IS, and burying it under four
+                groups it does not need would put the most-edited field in the
+                panel behind the most scrolling. Whether it STARTS open is
+                `INITIAL_INSPECTOR_GROUPS.title` in uiSlice.ts, not a prop here —
+                see InspectorGroup's header for why a component-level default
+                cannot survive persistence. */}
+            {allTitles ? (
+              <InspectorGroup id="title" heading="Title">
+                <TitleGroup clips={clips} />
+              </InspectorGroup>
+            ) : null}
+
             {audioOnly ? null : (
               <InspectorGroup id="blend" heading="Blend">
                 <ClipPropertyRow
@@ -228,6 +288,32 @@ export function Inspector(): ReactElement {
                 />
               )}
             </InspectorGroup>
+
+            {/* Grade and Effects are picture operations, so they follow the
+                same rule Transform and Blend already follow: an audio-only clip
+                has no pixels to grade, and a control that could only write a
+                stored number to no visible and no exported effect is one that
+                should not be rendered. */}
+            {audioOnly ? null : (
+              <InspectorGroup id="grade" heading="Grade">
+                <GradeGroup clips={clips} />
+              </InspectorGroup>
+            )}
+
+            {audioOnly ? null : (
+              <InspectorGroup id="effects" heading="Effects">
+                <EffectsGroup clips={clips} />
+              </InspectorGroup>
+            )}
+
+            {/* Transitions stay for every stream kind: a fade ramps the picture
+                AND the audio from one shared `transitionGain` (CREATIVE §4.2),
+                so an audio-only clip has a real fade to author. */}
+            <InspectorGroup id="transitions" heading="Transitions">
+              <TransitionsGroup clips={clips} />
+            </InspectorGroup>
+
+            <SubtitlesSection />
           </>
         )}
       </div>

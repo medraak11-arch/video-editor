@@ -127,3 +127,286 @@
 .ve-prop-control > * {
   min-width: 0;
 }
+
+/* ======================================================== group footnotes
+   A standing fact about a group — the approximation note (CREATIVE §3), the
+   dissolve-ownership sentence (§4.3), the subtitle scaling note (§6.3). NOT an
+   InlineNotice: nothing has gone wrong, nothing needs acknowledging, and
+   borrowing the error surface for a footnote would make a real error one more
+   bordered box among several. --text-muted is contrast-verified against
+   --surface-panel, which is the plane these actually sit on. */
+
+.ve-group-note {
+  color: var(--text-muted);
+}
+
+.ve-group-note-block {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  /* Clears the 84px label column so a footnote is not mistaken for a row. */
+  padding-top: var(--space-hair);
+}
+
+.ve-group-note-block .ve-icon-slot {
+  margin-top: 1px;
+}
+
+/* Reset, import, add — actions that belong to a group rather than to a row. */
+.ve-group-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  /* Pulls the ghost button's own padding back to the group's gutter so its
+     label aligns with the property labels above it. */
+  margin-left: calc(-1 * var(--space-md));
+}
+
+.ve-group-actions .ve-group-note {
+  margin-left: auto;
+}
+
+/* ================================================================ toggle
+   A boolean, rendered as a box plus a WORD. The word is the state; the glyph
+   is the second signal; the surface lightness is the third. No hue anywhere —
+   under deuteranopia this control is unchanged, which is what DESIGN.md asks
+   of any state a colour might otherwise have carried. */
+
+.ve-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  height: 26px;
+  padding: 0 var(--space-md) 0 var(--space-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-well);
+  color: var(--text-on-well);
+  text-align: left;
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    border-color var(--dur-feedback) var(--ease-out);
+}
+
+/* No focus rule here: base.css declares a universal `:focus { outline: none }`
+   and `:focus-visible` accent ring that this inherits for free. Restating it
+   would spend the inspector's accent budget (PLAN §7.4) on a ring it already
+   has — which is exactly what check-contract.mjs's accent-budget rule keeps a
+   slice from doing. Same for every other control in this file. */
+
+.ve-toggle:hover {
+  background: var(--surface-well-hover);
+}
+
+.ve-toggle[data-invalid='true'] {
+  border-color: var(--status-danger);
+}
+
+/* The box reads as checked by carrying a glyph and by stepping UP the lightness
+   ramp — not by taking the accent, which the inspector's budget does not hold
+   (PLAN §7.4). */
+.ve-toggle-box {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-structural);
+  border-radius: var(--radius-clip);
+  color: var(--text-ink);
+}
+
+.ve-toggle[data-state='on'] .ve-toggle-box,
+.ve-toggle[data-state='mixed'] .ve-toggle-box {
+  background: var(--surface-raised);
+  border-color: var(--text-muted);
+}
+
+.ve-toggle-word {
+  color: var(--text-on-well);
+}
+
+/* An OFF toggle says `Off` in the same recessed tone a mixed NumericField uses
+   for `Mixed`: the value is real but it is the absence of the thing. */
+.ve-toggle[data-state='off'] .ve-toggle-word {
+  color: var(--text-on-well-muted);
+}
+
+/* =============================================================== colour
+   The swatch shows the user's OWN colour, which is the one place in this app a
+   literal colour is correct — it is their data, not the interface's. */
+
+.ve-color-row {
+  gap: var(--space-sm);
+}
+
+.ve-color-swatch {
+  width: 28px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: var(--space-hair);
+  /* Without this a pure-black swatch dissolves into the panel in the two dark
+     themes and a pure-white one dissolves into daylight — a control losing its
+     own boundary at the values people pick most. */
+  border: 1px solid var(--border-hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-well);
+  cursor: pointer;
+}
+
+.ve-color-swatch::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.ve-color-swatch::-webkit-color-swatch {
+  border: 0;
+  border-radius: var(--radius-clip);
+}
+
+.ve-color-hex {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* A hex is a fixed-width token that changes while you watch it — the Tabular
+     Rule's case exactly, even though the digits are hexadecimal. */
+  font-family: var(--font-mono);
+  font-size: var(--type-numeric-size);
+  font-variant-numeric: tabular-nums;
+  text-transform: lowercase;
+}
+
+/* ========================================================= multiline field */
+
+.ve-field-input-multiline {
+  height: auto;
+  min-height: 26px;
+  padding: var(--space-sm) var(--space-md);
+  resize: vertical;
+  cursor: text;
+  white-space: pre-wrap;
+}
+
+/* Inside the windowed cue list. A resizable field would let the user change a
+   row's height, and every row below it would then be drawn at the wrong offset
+   — the window's geometry is arithmetic, not measured (§6.6.4). Long text
+   scrolls within the field instead of growing the row. */
+.ve-field-input-multiline[data-fixed='true'] {
+  height: 44px;
+  resize: none;
+}
+
+/* ============================================================== cue list
+   A LIST, not a table: three fields and a delete have no column semantics for a
+   table to promise. Designed against four hundred cues, so every row is the
+   same fixed shape and nothing here grows with the count. */
+
+/* Bounded, so the style controls below it stay reachable without scrolling past
+   the whole programme. The panel scrolls; this scrolls inside it. The 320px MUST
+   equal VIEWPORT_H in SubtitlesGroup.tsx — the window's row range is computed
+   from that constant, and a disagreement shows up as blank space at one edge. */
+.ve-cues-scroller {
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The spacer. Its height is set inline to `count * CUE_ROW_H` so the scrollbar
+   is honest about four hundred cues while a dozen rows are mounted. Rows are
+   positioned against it, not flowed — see .ve-cue. */
+.ve-cues {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* CONSTANT HEIGHT, ABSOLUTELY POSITIONED. §6.6.4: the window computes each
+   row's offset as `index * CUE_ROW_H`, so the height cannot depend on the row's
+   own content or on which of its fields have mounted. 132px = the CUE_ROW_H
+   export in CueRow.tsx, and the two must move together. `bottom` is left free
+   and the gap lives inside the box, so the visual gutter costs no arithmetic. */
+.ve-cue {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: calc(132px - var(--space-md));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border-radius: var(--radius-sm);
+  /* One step up from the panel. A hairline between rows instead would fail
+     DESIGN.md's Audit Test — a border standing in for a tonal step. */
+  background: var(--surface-raised);
+}
+
+/* The cue the programme is currently on. Three signals, none of them hue: a
+   marker glyph appears in a slot that is always reserved (so nothing shifts),
+   the surface steps up the lightness ramp, and the row carries aria-current for
+   anyone not looking at it. Under deuteranopia this is unchanged. */
+.ve-cue[data-active='true'] {
+  background: var(--surface-raised-hover);
+}
+
+.ve-cue-marker {
+  width: 12px;
+  flex: 0 0 auto;
+  color: var(--text-ink);
+}
+
+.ve-cue-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.ve-cue-index {
+  color: var(--text-muted);
+  min-width: 2ch;
+  flex: 0 0 auto;
+}
+
+/* The whole row's seek target. A cue's start is a place in the programme, and
+   the fastest check of a cue is being on the frame it lands on. */
+.ve-cue-seek {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-feedback) var(--ease-out),
+    color var(--dur-feedback) var(--ease-out);
+}
+
+.ve-cue-seek:hover {
+  background: var(--surface-raised-hover);
+  color: var(--text-ink);
+}
+
+.ve-cue-times {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.ve-cue-times > .ve-field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.ve-cue-arrow {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.ve-cues-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin-left: calc(-1 * var(--space-md));
+}
