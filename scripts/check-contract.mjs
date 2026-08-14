@@ -132,7 +132,15 @@ function pixelColourExempt(file, line) {
 
 for (const f of files) {
   const src = readFileSync(f, 'utf8');
-  const lines = src.split('\n');
+  /* Split on either terminator, so a line NEVER carries a trailing `\r`.
+     Splitting on '\n' alone leaves one on every line of a CRLF file, and every
+     `$`-anchored rule below then silently stops matching — the exemption shapes
+     first among them. This working tree is LF and every fresh checkout on
+     Windows is CRLF, so the gate passed here and failed on a clean machine,
+     which is the shape that blocked two releases of v0.2.0: `model.ts` reported
+     three unexempted colour literals that its exemption had always covered.
+     Normalise at the read, once, rather than teaching each rule about `\r`. */
+  const lines = src.split(/\r?\n/);
 
   lines.forEach((line, i) => {
     const n = i + 1;
